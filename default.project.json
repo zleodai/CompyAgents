@@ -1,0 +1,42 @@
+{
+  "name": "CompyAgent",
+  "tree": {
+    "$className": "DataModel",
+
+    "ServerScriptService": {
+      "CompyAgent": {
+        "$path": "Src/Server"
+      }
+    },
+    "ReplicatedStorage": {
+      "Packages": {
+        "$path": "Packages"
+      },
+      "RemoteEvents": {
+        "$className": "Folder",
+        "DebugPlaybackToggled": {
+          "$className": "RemoteEvent"
+        },
+        "DebugSpeedDecreased": {
+          "$className": "RemoteEvent"
+        },
+        "DebugSpeedIncreased": {
+          "$className": "RemoteEvent"
+        },
+        "DebugAverageFrameMS": {
+          "$className": "RemoteFunction"
+        }
+      },
+      "CompyAgent": {
+        "$path": "Src/Shared"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "CompyAgent": {
+          "$path": "Src/Client"
+        }
+      }
+    }
+  }
+}
