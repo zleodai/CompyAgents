@@ -5,6 +5,9 @@
 /*.rbxlx.lock
 /*.rbxl.lock
 
+.agents/
+.codex/
+.vscode/
 Packages/
 
 sourcemap.json
