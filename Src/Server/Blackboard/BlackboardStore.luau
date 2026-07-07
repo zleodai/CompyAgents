@@ -13,6 +13,22 @@ local Types = require(CompyServerScripts.Core.Types)
 local BlackboardStore = {}
 BlackboardStore.__index = BlackboardStore
 
+local function isBetterEnemySighting(candidate: Types.EnemySighting, current: Types.EnemySighting?): boolean
+	if not current then
+		return true
+	end
+
+	if candidate.confidence ~= current.confidence then
+		return candidate.confidence > current.confidence
+	end
+
+	if candidate.lastSeenAt ~= current.lastSeenAt then
+		return candidate.lastSeenAt > current.lastSeenAt
+	end
+
+	return candidate.agentId < current.agentId
+end
+
 function BlackboardStore:RecordEnemySighting(contact: Types.PerceptionContact, now: number): ()
 	self.enemySightings[contact.agentId] = {
 		agentId = contact.agentId,
@@ -28,7 +44,7 @@ function BlackboardStore:GetBestEnemySighting(): Types.EnemySighting?
 	local best = nil
 
 	for _, sighting in pairs(self.enemySightings) do
-		if not best or sighting.confidence > best.confidence or sighting.lastSeenAt > best.lastSeenAt then
+		if isBetterEnemySighting(sighting, best) then
 			best = sighting
 		end
 	end

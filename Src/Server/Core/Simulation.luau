@@ -16,6 +16,7 @@ local Config = require(CompyServerScripts.Core.Config)
 local Scheduler = require(CompyServerScripts.Core.Scheduler)
 
 local AgentState = require(CompyServerScripts.Agents.AgentState)
+local AgentModelStore = require(CompyServerScripts.Agents.AgentModelStore)
 local AgentStore = require(CompyServerScripts.Agents.AgentStore)
 
 local BlackboardStore = require(CompyServerScripts.Blackboard.BlackboardStore)
@@ -33,8 +34,10 @@ local VisualizationSystem = require(CompyServerScripts.Systems.VisualizationSyst
 local GridSensor = require(CompyServerScripts.Adapters.Sensors.GridSensor)
 local RaycastSensor = require(CompyServerScripts.Adapters.Sensors.RaycastSensor)
 local GridMovement = require(CompyServerScripts.Adapters.Movement.GridMovement)
+local NoobPathMovement = require(CompyServerScripts.Adapters.Movement.NoobPathMovement)
 local PathfindingMovement = require(CompyServerScripts.Adapters.Movement.PathfindingMovement)
 local GridPathfinder = require(CompyServerScripts.Adapters.Pathing.GridPathfinder)
+local NoopPathfinder = require(CompyServerScripts.Adapters.Pathing.NoopPathfinder)
 local RobloxPathfinder = require(CompyServerScripts.Adapters.Pathing.RobloxPathfinder)
 local GridWorldQuery = require(CompyServerScripts.Adapters.World.GridWorldQuery)
 local SpatialWorldQuery = require(CompyServerScripts.Adapters.World.SpatialWorldQuery)
@@ -51,7 +54,11 @@ Simulation.__index = Simulation
 
 local TWO_PI = math.pi * 2
 
-local function createAdapters(): Types.Adapters
+local function usesNoobPathSpatialMode(): boolean
+	return Config.SimulationMode == "Spatial" and Config.NoobPath.Enabled
+end
+
+local function createAdapters(agentModelStore: Types.AgentModelStore): Types.Adapters
 	if Config.SimulationMode == "Grid" then
 		return {
 			sensor = GridSensor.new(Config),
@@ -61,8 +68,17 @@ local function createAdapters(): Types.Adapters
 		}
 	end
 
+	if Config.NoobPath.Enabled then
+		return {
+			sensor = RaycastSensor.new(Config, agentModelStore),
+			movementDriver = NoobPathMovement.new(Config, agentModelStore),
+			pathProvider = NoopPathfinder.new(Config),
+			worldQuery = SpatialWorldQuery.new(Config),
+		}
+	end
+
 	return {
-		sensor = RaycastSensor.new(Config),
+		sensor = RaycastSensor.new(Config, agentModelStore),
 		movementDriver = PathfindingMovement.new(Config),
 		pathProvider = RobloxPathfinder.new(Config),
 		worldQuery = SpatialWorldQuery.new(Config),
@@ -92,12 +108,13 @@ function Simulation.new(): Types.Simulation
 	self.agentStore = AgentStore.new()
 	self.blackboards = {}
 	self.studioWorldRegistry = StudioWorldRegistry.new(Config)
+	self.agentModelStore = AgentModelStore.new(Config, self.studioWorldRegistry)
 
 	for teamId in pairs(Config.Teams) do
 		self.blackboards[teamId] = BlackboardStore.new(teamId)
 	end
 
-	self.adapters = createAdapters()
+	self.adapters = createAdapters(self.agentModelStore)
 	self.scheduler = Scheduler.new()
 	self.queues = {
 		Perception = BudgetQueue.new("Perception", Config.Queues.Perception),
@@ -114,6 +131,7 @@ function Simulation.new(): Types.Simulation
 	local deps: Types.SystemDependencies = {
 		config = Config,
 		agentStore = self.agentStore,
+		agentModelStore = self.agentModelStore,
 		blackboards = self.blackboards,
 		adapters = self.adapters,
 		queues = self.queues,
@@ -158,14 +176,16 @@ function Simulation:_registerCadence(): ()
 		true
 	)
 
-	self.scheduler:Every(
-		"PathingScan",
-		Config.Cadence.PathingScanInterval,
-		function(context: Types.SimulationContext): ()
-			self.systems.pathing:Scan(context.now)
-		end,
-		true
-	)
+	if not usesNoobPathSpatialMode() then
+		self.scheduler:Every(
+			"PathingScan",
+			Config.Cadence.PathingScanInterval,
+			function(context: Types.SimulationContext): ()
+				self.systems.pathing:Scan(context.now)
+			end,
+			true
+		)
+	end
 
 	self.scheduler:Every(
 		"BlackboardCleanup",
@@ -199,6 +219,7 @@ function Simulation:_spawnDemoAgents(count: number): ()
 			local position = teamConfig.SpawnOrigin + Vector3.new(0, 0, sideOffset)
 			local agent = AgentState.create(("%s_%02d"):format(teamId, index), teamId, position, teamConfig.Forward)
 			self.agentStore:Add(agent)
+			self.agentModelStore:CreateForAgent(agent, CFrame.lookAt(position, position + teamConfig.Forward))
 		end
 	end
 end
@@ -221,26 +242,21 @@ function Simulation:_spawnDemoAgentsFromStudio(count: number): boolean
 
 	for teamId, spawnPoints in pairs(spawnsByTeam) do
 		if #spawnPoints == 0 then
-			warn(("[CompyAgent:Simulation] No Studio spawn points available for team %s; spawning 0 agents"):format(teamId))
+			warn(
+				("[CompyAgent:Simulation] No Studio spawn points available for team %s; spawning 0 agents"):format(
+					teamId
+				)
+			)
 			continue
 		end
 
-		local agentsToSpawn = math.min(count, #spawnPoints)
-		if agentsToSpawn < count then
-			warn(
-				("[CompyAgent:Simulation] Only %d Studio spawn points available for team %s; requested %d agents"):format(
-					agentsToSpawn,
-					teamId,
-					count
-				)
-			)
-		end
-
-		for index = 1, agentsToSpawn do
-			local spawnPoint = spawnPoints[index]
+		for index = 1, count do
+			local spawnPointIndex = ((index - 1) % #spawnPoints) + 1
+			local spawnPoint = spawnPoints[spawnPointIndex]
 			local position = resolveStudioSpawnPosition(spawnPoint)
 			local agent = AgentState.create(("%s_%02d"):format(teamId, index), teamId, position, spawnPoint.facing)
 			self.agentStore:Add(agent)
+			self.agentModelStore:CreateForAgent(agent, CFrame.lookAt(position, position + spawnPoint.facing))
 		end
 	end
 

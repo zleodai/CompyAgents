@@ -33,6 +33,15 @@ local function isFacingTarget(config: Types.Config, agent: Types.Agent, target: 
 	return facing.Unit:Dot(toTarget.Unit) >= config.Combat.RequiredAimDot
 end
 
+local function getCombatPoint(self: Types.CombatSystem, agent: Types.Agent): Vector3
+	local head = self.agentModelStore:GetHead(agent.id)
+	if head then
+		return head.Position
+	end
+
+	return agent.transform.position + self.config.Sensor.EyeOffset
+end
+
 function CombatSystem.Step(self: Types.CombatSystem, dt: number, now: number): ()
 	self.accumulator = self.accumulator + dt
 	if self.accumulator < self.config.Cadence.CombatInterval then
@@ -53,11 +62,13 @@ function CombatSystem.Step(self: Types.CombatSystem, dt: number, now: number): (
 				and isFacingTarget(self.config, agent, target)
 				and self.worldQuery:HasLineOfSight(agent.transform.position, target.transform.position)
 			then
+				local shotOrigin = getCombatPoint(self, agent)
+				local shotTarget = getCombatPoint(self, target)
 				agent.stats.ammo = agent.stats.ammo - 1
 				target.stats.health = math.max(0, target.stats.health - self.config.Combat.DamagePerTick)
 				combat.lastShotAt = now
-				combat.lastShotOrigin = agent.transform.position
-				combat.lastShotTarget = target.transform.position
+				combat.lastShotOrigin = shotOrigin
+				combat.lastShotTarget = shotTarget
 				combat.shotCompleted = true
 				combat.shouldFire = false
 
@@ -74,6 +85,8 @@ function CombatSystem.Step(self: Types.CombatSystem, dt: number, now: number): (
 					else
 						target.stats.alive = false
 					end
+
+					self.agentModelStore:HideModel(target.id)
 				end
 			end
 		end
@@ -81,15 +94,14 @@ function CombatSystem.Step(self: Types.CombatSystem, dt: number, now: number): (
 end
 
 function CombatSystem.new(deps: Types.SystemDependencies): Types.CombatSystem
-	local self: Types.CombatSystem = {
-		config = deps.config,
-		agentStore = deps.agentStore,
-		blackboards = deps.blackboards,
-		worldQuery = deps.adapters.worldQuery,
-		accumulator = 0,
-		Step = CombatSystem.Step,
-	}
-	setmetatable(self, CombatSystem)
+	local self = setmetatable({}, CombatSystem)
+
+	self.config = deps.config
+	self.agentStore = deps.agentStore
+	self.agentModelStore = deps.agentModelStore
+	self.blackboards = deps.blackboards
+	self.worldQuery = deps.adapters.worldQuery
+	self.accumulator = 0
 
 	return self
 end

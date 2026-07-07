@@ -41,7 +41,7 @@ function PlanningSystem:Scan(now: number): ()
 
 					local blackboard = self.blackboards[liveAgent.teamId]
 					local facts = Goals.BuildFacts(liveAgent, blackboard)
-					local candidateGoals = Goals.BuildCandidateGoals(liveAgent, blackboard)
+					local candidateGoals = Goals.BuildCandidateGoals(liveAgent, blackboard, facts)
 					local availableActions = Actions.GetAvailableActions(liveAgent, facts, blackboard)
 
 					for _, goal in ipairs(candidateGoals) do

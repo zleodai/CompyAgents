@@ -85,14 +85,90 @@ local function shouldShowShotLine(config: Types.Config, agent: Types.Agent, now:
 		and now - combat.lastShotAt <= config.Visualization.ShotFlashDuration
 end
 
-local function getFlatFacing(agent: Types.Agent): Vector3?
-	local facing = agent.transform.facing
+local function getFlatUnit(vector: Vector3): Vector3?
+	local facing = vector
 	local flatFacing = Vector3.new(facing.X, 0, facing.Z)
 	if flatFacing.Magnitude < MIN_LINE_DISTANCE then
 		return nil
 	end
 
 	return flatFacing.Unit
+end
+
+local function shouldSyncModelFromAgent(config: Types.Config): boolean
+	return config.SimulationMode ~= "Spatial" or not config.NoobPath.Enabled
+end
+
+local function shouldUseNoobPathPathVisualization(config: Types.Config): boolean
+	return config.SimulationMode == "Spatial" and config.NoobPath.Enabled
+end
+
+function VisualizationSystem:_getModelRecord(agent: Types.Agent): Types.AgentModelRecord?
+	return self.agentModelStore:Get(agent.id)
+end
+
+function VisualizationSystem:_getRootPosition(agent: Types.Agent): Vector3
+	local record = self:_getModelRecord(agent)
+	if record then
+		return record.rootPart.Position
+	end
+
+	return agent.transform.position + self.config.Visualization.VerticalOffset
+end
+
+function VisualizationSystem:_getFacing(agent: Types.Agent): Vector3?
+	local record = self:_getModelRecord(agent)
+	if record then
+		local rootFacing = getFlatUnit(record.rootPart.CFrame.LookVector)
+		if rootFacing then
+			return rootFacing
+		end
+	end
+
+	return getFlatUnit(agent.transform.facing)
+end
+
+function VisualizationSystem:_ensureLabel(agent: Types.Agent, parent: BasePart, offset: Vector3): TextLabel?
+	if not self.config.Debug.ShowAgentLabels then
+		return nil
+	end
+
+	local existingGui = self.labelGuis[agent.id]
+	if existingGui and existingGui.Parent ~= parent then
+		existingGui:Destroy()
+		self.labelGuis[agent.id] = nil
+		self.labels[agent.id] = nil
+	end
+
+	local label = self.labels[agent.id]
+	if label then
+		local gui = self.labelGuis[agent.id]
+		if gui then
+			gui.StudsOffsetWorldSpace = offset
+		end
+		return label
+	end
+
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "DebugLabel"
+	gui.Size = UDim2.fromOffset(130, 36)
+	gui.StudsOffsetWorldSpace = offset
+	gui.AlwaysOnTop = true
+	gui.Parent = parent
+
+	label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Font = Enum.Font.Code
+	label.TextSize = 15
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeTransparency = 0.4
+	label.Parent = gui
+
+	self.labelGuis[agent.id] = gui
+	self.labels[agent.id] = label
+
+	return label
 end
 
 function VisualizationSystem:Initialize(): ()
@@ -108,6 +184,16 @@ function VisualizationSystem:Initialize(): ()
 end
 
 function VisualizationSystem:_ensureAgentPart(agent: Types.Agent): BasePart
+	local record = self:_getModelRecord(agent)
+	if record then
+		if self.parts[agent.id] then
+			hideDebugPart(self.parts[agent.id])
+		end
+
+		self:_ensureLabel(agent, record.head, Vector3.new(0, 1.8, 0))
+		return record.rootPart
+	end
+
 	if self.parts[agent.id] then
 		return self.parts[agent.id]
 	end
@@ -124,24 +210,7 @@ function VisualizationSystem:_ensureAgentPart(agent: Types.Agent): BasePart
 	part.Parent = self.folder
 	self.parts[agent.id] = part
 
-	if self.config.Debug.ShowAgentLabels then
-		local gui = Instance.new("BillboardGui")
-		gui.Name = "DebugLabel"
-		gui.Size = UDim2.fromOffset(130, 36)
-		gui.StudsOffsetWorldSpace = Vector3.new(0, 5, 0)
-		gui.AlwaysOnTop = true
-		gui.Parent = part
-
-		local label = Instance.new("TextLabel")
-		label.BackgroundTransparency = 1
-		label.Size = UDim2.fromScale(1, 1)
-		label.Font = Enum.Font.Code
-		label.TextSize = 15
-		label.TextColor3 = Color3.new(1, 1, 1)
-		label.TextStrokeTransparency = 0.4
-		label.Parent = gui
-		self.labels[agent.id] = label
-	end
+	self:_ensureLabel(agent, part, Vector3.new(0, 5, 0))
 
 	return part
 end
@@ -226,6 +295,12 @@ function VisualizationSystem:_ensureFacingArrowShaft(agent: Types.Agent): BasePa
 end
 
 function VisualizationSystem:_updateDestinationDebug(agent: Types.Agent): ()
+	if shouldUseNoobPathPathVisualization(self.config) then
+		hideDebugPart(self.destinationMarkers[agent.id])
+		hideDebugPart(self.destinationLines[agent.id])
+		return
+	end
+
 	local destination = agent.movement.destination
 	if not agent.stats.alive or not destination then
 		hideDebugPart(self.destinationMarkers[agent.id])
@@ -242,7 +317,7 @@ function VisualizationSystem:_updateDestinationDebug(agent: Types.Agent): ()
 	local line = self:_ensureDestinationLine(agent)
 	drawDebugLine(
 		line,
-		agent.transform.position + offset,
+		self:_getRootPosition(agent),
 		markerPosition,
 		self.config.Visualization.DestinationLineThickness,
 		self.config.Visualization.DestinationLineColor,
@@ -263,13 +338,11 @@ function VisualizationSystem:_updateShootingDebug(agent: Types.Agent, now: numbe
 		return
 	end
 
-	local startPosition = origin + self.config.Visualization.VerticalOffset
-	local endPosition = target + self.config.Visualization.VerticalOffset
 	local line = self:_ensureShootingLine(agent)
 	drawDebugLine(
 		line,
-		startPosition,
-		endPosition,
+		origin,
+		target,
 		self.config.Visualization.ShootingLineThickness,
 		self.config.Visualization.ShootingLineColor,
 		self.config.Visualization.ShootingLineTransparency
@@ -277,14 +350,14 @@ function VisualizationSystem:_updateShootingDebug(agent: Types.Agent, now: numbe
 end
 
 function VisualizationSystem:_updateFacingDebug(agent: Types.Agent): ()
-	local facing = getFlatFacing(agent)
+	local facing = self:_getFacing(agent)
 	if not agent.stats.alive or not facing then
 		hideDebugPart(self.facingArrowShafts[agent.id])
 		return
 	end
 
 	local config = self.config.Visualization
-	local basePosition = agent.transform.position + config.FacingArrowOffset
+	local basePosition = self:_getRootPosition(agent) + config.FacingArrowOffset
 	local shaftEndPosition = basePosition + facing * config.FacingArrowLength
 	local shaft = self:_ensureFacingArrowShaft(agent)
 	drawDebugLine(
@@ -305,10 +378,25 @@ function VisualizationSystem:Step(dt: number, now: number): ()
 	self.accumulator = 0
 
 	for _, agent in ipairs(self.agentStore:GetAll()) do
+		local record = self:_getModelRecord(agent)
+		if record and shouldSyncModelFromAgent(self.config) then
+			self.agentModelStore:SyncModelToAgent(agent)
+		end
+
 		local part = self:_ensureAgentPart(agent)
-		local targetCFrame = CFrame.new(agent.transform.position + self.config.Visualization.VerticalOffset)
-		part.CFrame = part.CFrame:Lerp(targetCFrame, self.config.Visualization.LerpAlpha)
-		part.Transparency = agent.stats.alive and 0 or 0.65
+		if record then
+			if not agent.stats.alive then
+				self.agentModelStore:HideModel(agent.id)
+			elseif not record.isStudioModel then
+				local transparency = agent.stats.alive and self.config.AgentModel.DebugTransparency or 0.65
+				record.rootPart.Transparency = transparency
+				record.head.Transparency = transparency
+			end
+		else
+			local targetCFrame = CFrame.new(agent.transform.position + self.config.Visualization.VerticalOffset)
+			part.CFrame = part.CFrame:Lerp(targetCFrame, self.config.Visualization.LerpAlpha)
+			part.Transparency = agent.stats.alive and 0 or 0.65
+		end
 
 		local label = self.labels[agent.id]
 		if label then
@@ -334,9 +422,11 @@ function VisualizationSystem.new(deps: Types.SystemDependencies): Types.Visualiz
 	self.destinationLines = {}
 	self.shootingLines = {}
 	self.facingArrowShafts = {}
+	self.labelGuis = {}
 	self.labels = {}
 	self.accumulator = 0
 	self.folder = nil
+	self.agentModelStore = deps.agentModelStore
 
 	return self
 end

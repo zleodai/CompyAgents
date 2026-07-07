@@ -16,7 +16,12 @@ local TEST_MODULES: { { Types.TestCase } } = {
 	require(CompyServerScripts.Tests.BudgetQueueTests),
 	require(CompyServerScripts.Tests.SchedulerTests),
 	require(CompyServerScripts.Tests.GOAPPlannerTests),
+	require(CompyServerScripts.Tests.BlackboardStoreTests),
 	require(CompyServerScripts.Tests.StudioWorldRegistryTests),
+	require(CompyServerScripts.Tests.AgentModelTests),
+	require(CompyServerScripts.Tests.RaycastSensorTests),
+	require(CompyServerScripts.Tests.NoobPathMovementTests),
+	require(CompyServerScripts.Tests.VisualizationSystemTests),
 }
 
 local function formatValue(value: Types.TestValue): string

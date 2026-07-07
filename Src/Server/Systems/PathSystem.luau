@@ -54,16 +54,14 @@ function PathSystem.Scan(self: Types.PathSystem, now: number): ()
 end
 
 function PathSystem.new(deps: Types.SystemDependencies): Types.PathSystem
-	local self: Types.PathSystem = {
-		config = deps.config,
-		agentStore = deps.agentStore,
-		worldQuery = deps.adapters.worldQuery,
-		pathProvider = deps.adapters.pathProvider,
-		movementDriver = deps.adapters.movementDriver,
-		queue = deps.queues.Pathing,
-		Scan = PathSystem.Scan,
-	}
-	setmetatable(self, PathSystem)
+	local self = setmetatable({}, PathSystem)
+
+	self.config = deps.config
+	self.agentStore = deps.agentStore
+	self.worldQuery = deps.adapters.worldQuery
+	self.pathProvider = deps.adapters.pathProvider
+	self.movementDriver = deps.adapters.movementDriver
+	self.queue = deps.queues.Pathing
 
 	return self
 end

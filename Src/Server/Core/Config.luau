@@ -30,6 +30,17 @@ local Config: Types.Config = {
 		FailFast = false,
 	},
 
+	AgentModel = {
+		Enabled = true,
+		FolderName = "CompyAgentModels",
+		RootPartSize = Vector3.new(2, 2, 1),
+		HeadSize = Vector3.new(1.2, 1.2, 1.2),
+		HeadOffset = Vector3.new(0, 2.5, 0),
+		HipHeight = 2,
+		WalkSpeed = 18,
+		DebugTransparency = 0.35,
+	},
+
 	AgentBootstrap = {
 		Enabled = true,
 		DemoAgentsPerTeam = 10,
@@ -42,6 +53,7 @@ local Config: Types.Config = {
 		SpawnTag = "CompySpawn",
 		CoverTag = "CompyCover",
 		ObjectiveTag = "CompyObjective",
+		HumanoidTag = "CompyHumanoid",
 	},
 
 	Cadence = {
@@ -89,6 +101,7 @@ local Config: Types.Config = {
 	Sensor = {
 		Range = 72,
 		FieldOfViewDegrees = 140,
+		EyeOffset = Vector3.new(0, 2.5, 0),
 	},
 
 	Movement = {
@@ -99,6 +112,24 @@ local Config: Types.Config = {
 
 	Pathing = {
 		RepathCooldown = 0.50,
+	},
+
+	NoobPath = {
+		Enabled = true,
+		Precise = true,
+		Timeout = true,
+		Visualize = true,
+		AgentParams = {
+			AgentRadius = 2,
+			AgentHeight = 5,
+			AgentCanJump = true,
+			AgentCanClimb = true,
+			WaypointSpacing = 4,
+			Costs = {},
+			PathSettings = {
+				SupportPartialPath = true,
+			},
+		},
 	},
 
 	Combat = {

@@ -20,6 +20,7 @@ local StudioWorldRegistryTests: { Types.TestCase } = {}
 local SPAWN_TAG = "CompyAgentTestSpawn"
 local COVER_TAG = "CompyAgentTestCover"
 local OBJECTIVE_TAG = "CompyAgentTestObjective"
+local HUMANOID_TAG = "CompyAgentTestHumanoid"
 local EMPTY_SPAWN_TAG = "CompyAgentTestEmptySpawn"
 
 local function cleanupTaggedInstances(tags: { string }): ()
@@ -40,6 +41,7 @@ local function createTestConfig(spawnTag: string): Types.Config
 		SpawnTag = spawnTag,
 		CoverTag = COVER_TAG,
 		ObjectiveTag = OBJECTIVE_TAG,
+		HumanoidTag = HUMANOID_TAG,
 	}
 
 	return config
@@ -55,6 +57,24 @@ local function createTaggedPart(name: string, tagName: string, cframe: CFrame): 
 	CollectionService:AddTag(part, tagName)
 
 	return part
+end
+
+local function createTaggedHumanoidModel(name: string, tagName: string): Model
+	local model = Instance.new("Model")
+	model.Name = name
+	model.Parent = Workspace
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.Parent = model
+
+	local rootPart = Instance.new("Part")
+	rootPart.Name = "HumanoidRootPart"
+	rootPart.Anchored = true
+	rootPart.Parent = model
+
+	CollectionService:AddTag(model, tagName)
+
+	return model
 end
 
 local function withSimulationConfig(levelConfig: Types.LevelConfig, bootstrapEnabled: boolean, callback: () -> ()): ()
@@ -77,7 +97,7 @@ end
 table.insert(StudioWorldRegistryTests, {
 	name = "StudioWorldRegistry parses and sorts tagged spawn points",
 	run = function(context: Types.TestContext): ()
-		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG })
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
 
 		local first = createTaggedPart("BlueFirst", SPAWN_TAG, CFrame.new(10, 2, 3) * CFrame.Angles(0, math.rad(90), 0))
 		first:SetAttribute("TeamId", "Blue")
@@ -111,14 +131,14 @@ table.insert(StudioWorldRegistryTests, {
 		context.AssertEqual(#redSpawns, 1, "Red team should read one spawn point")
 		context.Assert(redSpawns[1].part == red, "Red spawn should return the tagged Red part")
 
-		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG })
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
 	end,
 })
 
 table.insert(StudioWorldRegistryTests, {
 	name = "Simulation uses SpawnRadius for Studio spawn positions",
 	run = function(context: Types.TestContext): ()
-		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG })
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
 
 		local blue = createTaggedPart("BlueRadiusSpawn", SPAWN_TAG, CFrame.new(100, 5, 200))
 		blue:SetAttribute("TeamId", "Blue")
@@ -133,6 +153,7 @@ table.insert(StudioWorldRegistryTests, {
 			SpawnTag = SPAWN_TAG,
 			CoverTag = COVER_TAG,
 			ObjectiveTag = OBJECTIVE_TAG,
+			HumanoidTag = HUMANOID_TAG,
 		}
 
 		withSimulationConfig(levelConfig, false, function(): ()
@@ -157,14 +178,105 @@ table.insert(StudioWorldRegistryTests, {
 			context.Assert(redAgent.transform.position == red.Position, "Spawn without SpawnRadius should use exact position")
 		end)
 
-		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG })
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
+	end,
+})
+
+table.insert(StudioWorldRegistryTests, {
+	name = "Simulation cycles team agents across available Studio spawn points",
+	run = function(context: Types.TestContext): ()
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
+
+		local blue = createTaggedPart("BlueOnlySpawn", SPAWN_TAG, CFrame.new(10, 2, 30))
+		blue:SetAttribute("TeamId", "Blue")
+		blue:SetAttribute("SpawnOrder", 1)
+
+		local redFirst = createTaggedPart("RedFirstSpawn", SPAWN_TAG, CFrame.new(-10, 2, -30))
+		redFirst:SetAttribute("TeamId", "Red")
+		redFirst:SetAttribute("SpawnOrder", 1)
+
+		local redSecond = createTaggedPart("RedSecondSpawn", SPAWN_TAG, CFrame.new(-20, 2, -30))
+		redSecond:SetAttribute("TeamId", "Red")
+		redSecond:SetAttribute("SpawnOrder", 2)
+
+		local levelConfig: Types.LevelConfig = {
+			UseStudioLevel = true,
+			UseConfigSpawnsFallback = true,
+			SpawnTag = SPAWN_TAG,
+			CoverTag = COVER_TAG,
+			ObjectiveTag = OBJECTIVE_TAG,
+			HumanoidTag = HUMANOID_TAG,
+		}
+
+		withSimulationConfig(levelConfig, false, function(): ()
+			local simulation = Simulation.new()
+
+			simulation:_spawnDemoAgents(4)
+
+			local blueAgents = simulation.agentStore:GetTeam("Blue")
+			local redAgents = simulation.agentStore:GetTeam("Red")
+
+			context.AssertEqual(#blueAgents, 4, "Blue should spawn all requested agents from one spawn point")
+			context.AssertEqual(#redAgents, 4, "Red should spawn all requested agents across two spawn points")
+
+			for _, agent in ipairs(blueAgents) do
+				context.Assert(agent.transform.position == blue.Position, "single Blue spawn should receive every Blue agent")
+			end
+
+			context.Assert(redAgents[1].transform.position == redFirst.Position, "first Red agent should use first spawn")
+			context.Assert(redAgents[2].transform.position == redSecond.Position, "second Red agent should use second spawn")
+			context.Assert(redAgents[3].transform.position == redFirst.Position, "third Red agent should cycle to first spawn")
+			context.Assert(redAgents[4].transform.position == redSecond.Position, "fourth Red agent should cycle to second spawn")
+		end)
+
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
+	end,
+})
+
+table.insert(StudioWorldRegistryTests, {
+	name = "StudioWorldRegistry parses tagged humanoid models",
+	run = function(context: Types.TestContext): ()
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
+
+		local blue = createTaggedHumanoidModel("BlueHumanoid", HUMANOID_TAG)
+		blue:SetAttribute("TeamId", "Blue")
+		blue:SetAttribute("Frequency", 2.5)
+
+		local global = createTaggedHumanoidModel("GlobalHumanoid", HUMANOID_TAG)
+
+		local invalid = Instance.new("Model")
+		invalid.Name = "InvalidHumanoid"
+		invalid.Parent = Workspace
+		CollectionService:AddTag(invalid, HUMANOID_TAG)
+
+		local registry = StudioWorldRegistry.new(createTestConfig(SPAWN_TAG))
+		local blueModels = registry:GetHumanoidModels("Blue")
+		local redModels = registry:GetHumanoidModels("Red")
+
+		context.AssertEqual(#blueModels, 2, "Blue team should read team-specific and global humanoid models")
+		context.AssertEqual(#redModels, 1, "Red team should only read global humanoid model")
+
+		local blueRecord = blueModels[1]
+		if blueRecord.model ~= blue then
+			blueRecord = blueModels[2]
+		end
+
+		context.Assert(blueRecord.model == blue, "Blue humanoid model should be recorded")
+		context.AssertEqual(blueRecord.teamId, "Blue", "humanoid model should read TeamId")
+		context.AssertEqual(blueRecord.frequency, 2.5, "humanoid model should read Frequency")
+		context.Assert(blueRecord.humanoid == blue:FindFirstChildOfClass("Humanoid"), "humanoid model should store Humanoid")
+		context.Assert(blueRecord.rootPart == blue:FindFirstChild("HumanoidRootPart"), "humanoid model should store root part")
+		context.AssertEqual(redModels[1].frequency, 1.0, "humanoid model without Frequency should default to 1.0")
+		context.Assert(redModels[1].model == global, "global humanoid model should be returned for other teams")
+
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
 	end,
 })
 
 table.insert(StudioWorldRegistryTests, {
 	name = "StudioWorldRegistry parses tagged cover and objective points",
 	run = function(context: Types.TestContext): ()
-		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG })
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
 
 		local cover = createTaggedPart("CoverPart", COVER_TAG, CFrame.new(4, 0, 8))
 		cover:SetAttribute("CoverId", "cover-a")
@@ -192,7 +304,7 @@ table.insert(StudioWorldRegistryTests, {
 		context.AssertEqual(objectives[1].radius, 18, "objective should read Radius")
 		context.Assert(objectives[1].position == objective.Position, "objective should record Position")
 
-		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG })
+		cleanupTaggedInstances({ SPAWN_TAG, COVER_TAG, OBJECTIVE_TAG, HUMANOID_TAG })
 	end,
 })
 
@@ -207,6 +319,7 @@ table.insert(StudioWorldRegistryTests, {
 			SpawnTag = EMPTY_SPAWN_TAG,
 			CoverTag = COVER_TAG,
 			ObjectiveTag = OBJECTIVE_TAG,
+			HumanoidTag = HUMANOID_TAG,
 		}
 
 		withSimulationConfig(levelConfig, false, function(): ()

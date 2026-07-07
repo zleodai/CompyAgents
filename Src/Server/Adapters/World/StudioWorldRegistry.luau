@@ -74,7 +74,18 @@ local function getPartFromTaggedInstance(instance: Instance, tagName: string): B
 		return instance
 	end
 
-	warn(("[CompyAgent:StudioWorldRegistry] Ignoring non-BasePart tagged %s: %s"):format(tagName, instance:GetFullName()))
+	warn(
+		("[CompyAgent:StudioWorldRegistry] Ignoring non-BasePart tagged %s: %s"):format(tagName, instance:GetFullName())
+	)
+	return nil
+end
+
+local function getModelFromTaggedInstance(instance: Instance, tagName: string): Model?
+	if instance:IsA("Model") then
+		return instance
+	end
+
+	warn(("[CompyAgent:StudioWorldRegistry] Ignoring non-Model tagged %s: %s"):format(tagName, instance:GetFullName()))
 	return nil
 end
 
@@ -138,10 +149,33 @@ function StudioWorldRegistry:_readObjective(part: BasePart): Types.StudioObjecti
 	}
 end
 
+function StudioWorldRegistry:_readHumanoidModel(model: Model): Types.StudioHumanoidModel?
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		warn(("[CompyAgent:StudioWorldRegistry] Ignoring humanoid model without Humanoid: %s"):format(model:GetFullName()))
+		return nil
+	end
+
+	local rootPart: BasePart? = nil
+	local rootPartInstance = model:FindFirstChild("HumanoidRootPart")
+	if rootPartInstance and rootPartInstance:IsA("BasePart") then
+		rootPart = rootPartInstance
+	end
+
+	return {
+		model = model,
+		humanoid = humanoid,
+		rootPart = rootPart,
+		teamId = readStringAttribute(model, "TeamId"),
+		frequency = readNumberAttribute(model, "Frequency", 1.0),
+	}
+end
+
 function StudioWorldRegistry:Refresh(): ()
 	table.clear(self.spawnPoints)
 	table.clear(self.coverPoints)
 	table.clear(self.objectives)
+	table.clear(self.humanoidModels)
 
 	for _, instance in ipairs(CollectionService:GetTagged(self.config.Level.SpawnTag)) do
 		local part = getPartFromTaggedInstance(instance, self.config.Level.SpawnTag)
@@ -164,12 +198,25 @@ function StudioWorldRegistry:Refresh(): ()
 		end
 	end
 
+	for _, instance in ipairs(CollectionService:GetTagged(self.config.Level.HumanoidTag)) do
+		local model = getModelFromTaggedInstance(instance, self.config.Level.HumanoidTag)
+		if model then
+			local humanoidModel = self:_readHumanoidModel(model)
+			if humanoidModel then
+				table.insert(self.humanoidModels, humanoidModel)
+			end
+		end
+	end
+
 	sortSpawnPoints(self.spawnPoints)
 	sortNamedParts(self.coverPoints, function(point: Types.StudioCoverPoint): string
 		return point.coverId
 	end)
 	sortNamedParts(self.objectives, function(objective: Types.StudioObjective): string
 		return objective.objectiveId
+	end)
+	sortNamedParts(self.humanoidModels, function(humanoidModel: Types.StudioHumanoidModel): string
+		return humanoidModel.model:GetFullName()
 	end)
 end
 
@@ -209,6 +256,18 @@ function StudioWorldRegistry:GetObjectives(teamId: Types.TeamId?): { Types.Studi
 	return result
 end
 
+function StudioWorldRegistry:GetHumanoidModels(teamId: Types.TeamId?): { Types.StudioHumanoidModel }
+	local result: { Types.StudioHumanoidModel } = {}
+
+	for _, humanoidModel in ipairs(self.humanoidModels) do
+		if matchesTeam(humanoidModel.teamId, teamId) then
+			table.insert(result, humanoidModel)
+		end
+	end
+
+	return result
+end
+
 function StudioWorldRegistry.new(config: Types.Config): Types.StudioWorldRegistry
 	local self = setmetatable({}, StudioWorldRegistry)
 
@@ -216,6 +275,7 @@ function StudioWorldRegistry.new(config: Types.Config): Types.StudioWorldRegistr
 	self.spawnPoints = {}
 	self.coverPoints = {}
 	self.objectives = {}
+	self.humanoidModels = {}
 
 	self:Refresh()
 

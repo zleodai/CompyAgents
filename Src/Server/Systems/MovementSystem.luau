@@ -13,18 +13,31 @@ local Types = require(CompyServerScripts.Core.Types)
 local MovementSystem = {}
 MovementSystem.__index = MovementSystem
 
+local function usesNoobPathSpatialMode(config: Types.Config): boolean
+	return config.SimulationMode == "Spatial" and config.NoobPath.Enabled
+end
+
 function MovementSystem.Step(self: Types.MovementSystem, dt: number, now: number): ()
+	local noobPathSpatialMode = usesNoobPathSpatialMode(self.config)
+
 	for _, agent in ipairs(self.agentStore:GetAll()) do
 		if agent.stats.alive then
 			local movement = agent.movement
 
-			if movement.destination and not movement.path and not movement.needsPath and not movement.pathQueued then
+			if
+				not noobPathSpatialMode
+				and movement.destination
+				and not movement.path
+				and not movement.needsPath
+				and not movement.pathQueued
+			then
 				movement.needsPath = true
 			end
 
 			local currentPath = movement.path
 			if
-				movement.destination
+				not noobPathSpatialMode
+				and movement.destination
 				and currentPath
 				and currentPath.status == "Failed"
 				and not movement.needsPath
@@ -45,17 +58,18 @@ function MovementSystem.Step(self: Types.MovementSystem, dt: number, now: number
 				movement.mode = "Idle"
 				movement.arrived = true
 			end
+		elseif noobPathSpatialMode then
+			self.movementDriver:Step(agent, dt)
 		end
 	end
 end
 
 function MovementSystem.new(deps: Types.SystemDependencies): Types.MovementSystem
-	local self: Types.MovementSystem = {
-		agentStore = deps.agentStore,
-		movementDriver = deps.adapters.movementDriver,
-		Step = MovementSystem.Step,
-	}
-	setmetatable(self, MovementSystem)
+	local self = setmetatable({}, MovementSystem)
+
+	self.config = deps.config
+	self.agentStore = deps.agentStore
+	self.movementDriver = deps.adapters.movementDriver
 
 	return self
 end

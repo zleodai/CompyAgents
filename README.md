@@ -18,12 +18,13 @@ For more help, check out [the Rojo documentation](https://rojo.space/docs).
 
 ## Studio-authored level tags
 
-The server can read Studio-authored `BasePart` instances through
+The server can read Studio-authored instances through
 `CollectionService` tags when `Config.Level.UseStudioLevel` is enabled. The
 current tag names are configured in `Src/Server/Core/Config.luau`.
 
-Tagged instances must be `BasePart`s. Non-part instances with these tags are
-ignored with a warning.
+Spawn, cover, and objective tags must be placed on `BasePart`s. Humanoid tags
+must be placed on `Model`s that contain a `Humanoid`. Invalid tagged instances
+are ignored with a warning.
 
 ### `CompySpawn`
 
@@ -40,6 +41,9 @@ back to config-based spawn origins.
 The spawn record also stores the part `CFrame`, `Position`, and
 `CFrame.LookVector`. Bootstrap agents use the part look vector as their initial
 facing. If `SpawnRadius` is omitted, agents spawn directly on the part position.
+When multiple agents need to spawn for a team, the bootstrap path cycles through
+that team's sorted spawn points. With one spawn point, every agent for that team
+uses it; with two spawn points, agents alternate between them.
 
 ### `CompyCover`
 
@@ -68,3 +72,16 @@ Registered as objective metadata for future objective behavior.
 | `Radius` | number | No | `max(part.Size.X, part.Size.Z) / 2` | Interaction or capture radius stored on the objective record. |
 
 The objective record also stores the part `CFrame` and `Position`.
+
+### `CompyHumanoid`
+
+Registered as humanoid model metadata for future agent model selection.
+
+| Attribute | Type | Required | Default | Behavior |
+| --- | --- | --- | --- | --- |
+| `TeamId` | string | No | global | Limits the humanoid model to one team. If omitted, the model is returned for any team query. |
+| `Frequency` | number | No | `1.0` | Relative weight for how often this model should be used compared to other matching models. |
+
+The tag should be applied to the humanoid `Model`, not the child `Humanoid`.
+The registry stores the model, its `Humanoid`, and its `HumanoidRootPart` when
+that root part exists.
