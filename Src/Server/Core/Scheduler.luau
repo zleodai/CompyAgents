@@ -33,8 +33,6 @@ function Scheduler:Every(
 		callback = callback,
 		elapsed = runImmediately and intervalSeconds or 0,
 	}
-
-	print(`Added `)
 end
 
 function Scheduler:Step(context: Types.SimulationContext): ()

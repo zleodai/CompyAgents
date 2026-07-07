@@ -60,6 +60,8 @@ function AgentState.create(id: Types.AgentId, teamId: Types.TeamId, position: Ve
 			shouldFire = false,
 			shotCompleted = false,
 			lastShotAt = 0,
+			lastShotOrigin = nil,
+			lastShotTarget = nil,
 		},
 
 		perception = {

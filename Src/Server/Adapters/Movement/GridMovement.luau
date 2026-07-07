@@ -13,6 +13,29 @@ local Types = require(CompyServerScripts.Core.Types)
 local GridMovement = {}
 GridMovement.__index = GridMovement
 
+local function rotateTowards(currentDirection: Vector3, desiredDirection: Vector3, maxRadians: number): Vector3
+	if desiredDirection.Magnitude <= 0.001 then
+		return currentDirection
+	end
+
+	local desiredUnit = desiredDirection.Unit
+	local currentUnit = currentDirection.Magnitude > 0.001 and currentDirection.Unit or desiredUnit
+	local dot = math.clamp(currentUnit:Dot(desiredUnit), -1, 1)
+	local angle = math.acos(dot)
+
+	if angle <= maxRadians or angle <= 0.001 then
+		return desiredUnit
+	end
+
+	local alpha = math.clamp(maxRadians / angle, 0, 1)
+	local blended = currentUnit:Lerp(desiredUnit, alpha)
+	if blended.Magnitude <= 0.001 then
+		return desiredUnit
+	end
+
+	return blended.Unit
+end
+
 function GridMovement:SetPath(agent: Types.Agent, pathResult: Types.PathResult): ()
 	agent.movement.path = pathResult
 	agent.movement.pathIndex = 1
@@ -47,7 +70,8 @@ function GridMovement:Step(agent: Types.Agent, dt: number): Types.MovementStatus
 	local stepDistance = math.min(self.config.Movement.Speed * dt, distance)
 	agent.transform.position = position + offset.Unit * stepDistance
 	if offset.Magnitude > 0.001 then
-		agent.transform.facing = offset.Unit
+		local maxRadians = self.config.Movement.FacingTurnRateRadiansPerSecond * dt
+		agent.transform.facing = rotateTowards(agent.transform.facing, offset, maxRadians)
 	end
 
 	return "Moving"

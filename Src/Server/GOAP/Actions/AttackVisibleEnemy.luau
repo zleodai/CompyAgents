@@ -26,6 +26,7 @@ local ACTION: Types.GOAPAction = {
 	onActionStart = function(controller: Types.AgentController, context: Types.GOAPActionContext): ()
 		local target = controller:GetBestVisibleEnemy()
 		if target then
+			controller:LookAtPosition(target.position, context.dt)
 			controller:ShootAtTarget(target.agentId)
 		else
 			controller:RequestPlan(context.now, "attack_target_lost")
@@ -34,6 +35,7 @@ local ACTION: Types.GOAPAction = {
 	onActionUpdate = function(controller: Types.AgentController, context: Types.GOAPActionContext): ()
 		local target = controller:GetBestVisibleEnemy()
 		if target then
+			controller:LookAtPosition(target.position, context.dt)
 			controller:ShootAtTarget(target.agentId)
 		else
 			controller:StopShooting()

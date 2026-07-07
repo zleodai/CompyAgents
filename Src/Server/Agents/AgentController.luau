@@ -17,6 +17,35 @@ local function positionsClose(a: Vector3, b: Vector3, tolerance: number): boolea
 	return (a - b).Magnitude <= tolerance
 end
 
+local function distanceScore(fromPosition: Vector3, toPosition: Vector3): number
+	local offset = toPosition - fromPosition
+	local distanceSquared = offset:Dot(offset)
+	return 1 / math.max(distanceSquared, 0.001)
+end
+
+local function rotateTowards(currentDirection: Vector3, desiredDirection: Vector3, maxRadians: number): Vector3
+	if desiredDirection.Magnitude <= 0.001 then
+		return currentDirection
+	end
+
+	local desiredUnit = desiredDirection.Unit
+	local currentUnit = currentDirection.Magnitude > 0.001 and currentDirection.Unit or desiredUnit
+	local dot = math.clamp(currentUnit:Dot(desiredUnit), -1, 1)
+	local angle = math.acos(dot)
+
+	if angle <= maxRadians or angle <= 0.001 then
+		return desiredUnit
+	end
+
+	local alpha = math.clamp(maxRadians / angle, 0, 1)
+	local blended = currentUnit:Lerp(desiredUnit, alpha)
+	if blended.Magnitude <= 0.001 then
+		return desiredUnit
+	end
+
+	return blended.Unit
+end
+
 function AgentController.RequestPlan(self: Types.AgentController, now: number?, reason: string?): ()
 	local agent = self.agentState
 	agent.decision.needsPlan = true
@@ -89,6 +118,13 @@ function AgentController.TakeCoverAt(self: Types.AgentController, coverPosition:
 	self:MoveTo(coverPosition)
 end
 
+function AgentController.LookAtPosition(self: Types.AgentController, targetPosition: Vector3, dt: number): ()
+	local agent = self.agentState
+	local desiredDirection = targetPosition - agent.transform.position
+	local maxRadians = self.config.Movement.FacingTurnRateRadiansPerSecond * dt
+	agent.transform.facing = rotateTowards(agent.transform.facing, desiredDirection, maxRadians)
+end
+
 function AgentController.ShootAtTarget(self: Types.AgentController, targetId: Types.AgentId): ()
 	local combat = self.agentState.combat
 
@@ -112,14 +148,22 @@ function AgentController.SetInCover(self: Types.AgentController, inCover: boolea
 end
 
 function AgentController.GetBestVisibleEnemy(self: Types.AgentController): Types.PerceptionContact?
+	local agentPosition = self.agentState.transform.position
+	local bestContact: Types.PerceptionContact? = nil
+	local bestScore = -math.huge
+
 	for _, contact in ipairs(self.agentState.perception.visibleEnemies) do
 		local target = self.agentStore:Get(contact.agentId)
 		if target and target.stats.alive then
-			return contact
+			local score = distanceScore(agentPosition, target.transform.position)
+			if score > bestScore then
+				bestContact = contact
+				bestScore = score
+			end
 		end
 	end
 
-	return nil
+	return bestContact
 end
 
 function AgentController.GetBestKnownEnemyPosition(self: Types.AgentController): Vector3?
@@ -149,13 +193,29 @@ function AgentController.GetActionElapsed(self: Types.AgentController, now: numb
 end
 
 function AgentController.new(agentState: Types.Agent, deps: Types.AgentControllerDependencies): Types.AgentController
-	local self = setmetatable({}, AgentController)
-
-	self.agentState = agentState
-	self.config = deps.config
-	self.agentStore = deps.agentStore
-	self.blackboard = deps.blackboard
-	self.worldQuery = deps.worldQuery
+	local self: Types.AgentController = {
+		agentState = agentState,
+		config = deps.config,
+		agentStore = deps.agentStore,
+		blackboard = deps.blackboard,
+		worldQuery = deps.worldQuery,
+		RequestPlan = AgentController.RequestPlan,
+		ClearPlan = AgentController.ClearPlan,
+		Kill = AgentController.Kill,
+		MoveTo = AgentController.MoveTo,
+		MoveForAction = AgentController.MoveForAction,
+		TakeCoverAt = AgentController.TakeCoverAt,
+		LookAtPosition = AgentController.LookAtPosition,
+		ShootAtTarget = AgentController.ShootAtTarget,
+		StopShooting = AgentController.StopShooting,
+		SetInCover = AgentController.SetInCover,
+		GetBestVisibleEnemy = AgentController.GetBestVisibleEnemy,
+		GetBestKnownEnemyPosition = AgentController.GetBestKnownEnemyPosition,
+		HasReachedDestination = AgentController.HasReachedDestination,
+		HasCompletedShot = AgentController.HasCompletedShot,
+		GetActionElapsed = AgentController.GetActionElapsed,
+	}
+	setmetatable(self, AgentController)
 
 	return self
 end

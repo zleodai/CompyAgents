@@ -251,6 +251,8 @@ export type AgentCombat = {
 	shouldFire: boolean,
 	shotCompleted: boolean,
 	lastShotAt: number,
+	lastShotOrigin: Vector3?,
+	lastShotTarget: Vector3?,
 }
 
 -- AgentPerception stores visible and remembered enemies. PerceptionSystem writes
@@ -321,6 +323,7 @@ export type AgentController = {
 	MoveTo: (AgentController, Vector3) -> (),
 	MoveForAction: (AgentController, ActionId) -> (),
 	TakeCoverAt: (AgentController, Vector3) -> (),
+	LookAtPosition: (AgentController, Vector3, number) -> (),
 	ShootAtTarget: (AgentController, AgentId) -> (),
 	StopShooting: (AgentController) -> (),
 	SetInCover: (AgentController, boolean) -> (),
@@ -422,11 +425,64 @@ export type DebugConfig = {
 	ShowAgentLabels: boolean,
 }
 
+-- TestConfig controls server startup test mode. When Enabled is true,
+-- Main.server runs Tests.TestRunner instead of starting Simulation.
+export type TestConfig = {
+	Enabled: boolean,
+	Verbose: boolean,
+	FailFast: boolean,
+}
+
+-- TestValue is the primitive comparison domain used by the lightweight Roblox
+-- test harness assertion helpers.
+export type TestValue = string | number | boolean | nil
+
+-- TestContext is passed into every test case. It contains typed assertion
+-- helpers so tests avoid untyped ad hoc checks.
+export type TestContext = {
+	Assert: (boolean, string) -> (),
+	AssertEqual: (TestValue, TestValue, string) -> (),
+	AssertActionSequence: ({ ActionId }, { ActionId }, string) -> (),
+}
+
+-- TestCase is one executable server-side test. Tests.TestRunner runs these
+-- cases when Config.Tests.Enabled is true.
+export type TestCase = {
+	name: string,
+	run: (TestContext) -> (),
+}
+
+-- TestFailure stores one failed test name and message for the final test
+-- summary printed by Tests.TestRunner.
+export type TestFailure = {
+	name: string,
+	message: string,
+}
+
+-- TestSummary is the aggregate result returned by Tests.TestRunner.RunAll.
+export type TestSummary = {
+	total: number,
+	passed: number,
+	failed: number,
+	failures: { TestFailure },
+}
+
 -- AgentBootstrapConfig controls automatic demo agent creation during startup.
 export type AgentBootstrapConfig = {
 	Enabled: boolean,
 	DemoAgentsPerTeam: number,
 	TargetAgentsPerTeam: number,
+}
+
+-- LevelConfig controls Studio-authored level discovery. When enabled,
+-- Simulation can use tagged Studio parts for startup spawns while preserving
+-- config-authored spawn origins as a fallback.
+export type LevelConfig = {
+	UseStudioLevel: boolean,
+	UseConfigSpawnsFallback: boolean,
+	SpawnTag: string,
+	CoverTag: string,
+	ObjectiveTag: string,
 }
 
 -- CadenceConfig controls scan/update intervals for systems and visualization.
@@ -461,10 +517,12 @@ export type SensorConfig = {
 	FieldOfViewDegrees: number,
 }
 
--- MovementConfig controls waypoint following speed and completion tolerance.
+-- MovementConfig controls waypoint following speed, completion tolerance, and
+-- maximum data-facing turn rate for movement and action aiming.
 export type MovementConfig = {
 	Speed: number,
 	WaypointTolerance: number,
+	FacingTurnRateRadiansPerSecond: number,
 }
 
 -- PathingConfig controls path request throttling.
@@ -476,6 +534,7 @@ export type PathingConfig = {
 export type CombatConfig = {
 	Range: number,
 	DamagePerTick: number,
+	RequiredAimDot: number,
 }
 
 -- VisualizationConfig controls the read-only Roblox Instance visualization.
@@ -484,6 +543,21 @@ export type VisualizationConfig = {
 	AgentSize: Vector3,
 	VerticalOffset: Vector3,
 	LerpAlpha: number,
+	DestinationMarkerSize: Vector3,
+	DestinationMarkerOffset: Vector3,
+	DestinationLineThickness: number,
+	DestinationLineColor: Color3,
+	DestinationLineTransparency: number,
+	ShootingLineThickness: number,
+	ShootingLineLength: number,
+	ShootingLineColor: Color3,
+	ShootingLineTransparency: number,
+	ShotFlashDuration: number,
+	FacingArrowOffset: Vector3,
+	FacingArrowLength: number,
+	FacingArrowShaftThickness: number,
+	FacingArrowColor: Color3,
+	FacingArrowTransparency: number,
 }
 
 -- TeamConfig controls team color and demo spawn layout.
@@ -497,11 +571,61 @@ export type TeamConfig = {
 -- TeamsConfig stores all team configurations by TeamId.
 export type TeamsConfig = { [TeamId]: TeamConfig }
 
+-- StudioSpawnPoint is a typed record generated from a tagged Studio spawn part.
+export type StudioSpawnPoint = {
+	part: BasePart,
+	teamId: TeamId?,
+	squadId: string?,
+	spawnOrder: number,
+	spawnRadius: number,
+	cframe: CFrame,
+	position: Vector3,
+	facing: Vector3,
+}
+
+-- StudioCoverPoint is a typed record generated from a tagged Studio cover part.
+export type StudioCoverPoint = {
+	part: BasePart,
+	coverId: string,
+	coverQuality: number,
+	teamId: TeamId?,
+	cframe: CFrame,
+	position: Vector3,
+	facing: Vector3,
+}
+
+-- StudioObjective is a typed record generated from a tagged Studio objective
+-- part.
+export type StudioObjective = {
+	part: BasePart,
+	objectiveId: string,
+	teamId: TeamId?,
+	radius: number,
+	cframe: CFrame,
+	position: Vector3,
+}
+
+-- StudioWorldRegistry is the startup snapshot of tagged Studio-authored level
+-- objects. Query methods return fresh arrays so callers do not mutate registry
+-- list membership.
+export type StudioWorldRegistry = {
+	config: Config,
+	spawnPoints: { StudioSpawnPoint },
+	coverPoints: { StudioCoverPoint },
+	objectives: { StudioObjective },
+	Refresh: (StudioWorldRegistry) -> (),
+	GetSpawnPoints: (StudioWorldRegistry, TeamId?) -> { StudioSpawnPoint },
+	GetCoverPoints: (StudioWorldRegistry, TeamId?) -> { StudioCoverPoint },
+	GetObjectives: (StudioWorldRegistry, TeamId?) -> { StudioObjective },
+}
+
 -- Config is the full central configuration table returned by Core.Config.
 export type Config = {
 	SimulationMode: "Grid" | "Spatial",
 	Debug: DebugConfig,
+	Tests: TestConfig,
 	AgentBootstrap: AgentBootstrapConfig,
+	Level: LevelConfig,
 	Cadence: CadenceConfig,
 	Queues: QueuesConfig,
 	GOAP: PlannerOptions,
@@ -698,12 +822,20 @@ export type VisualizationSystem = {
 	config: Config,
 	agentStore: AgentStore,
 	parts: { [AgentId]: BasePart },
+	destinationMarkers: { [AgentId]: BasePart },
+	destinationLines: { [AgentId]: BasePart },
+	shootingLines: { [AgentId]: BasePart },
+	facingArrowShafts: { [AgentId]: BasePart },
 	labels: { [AgentId]: TextLabel },
 	accumulator: number,
 	folder: Folder?,
 	Initialize: (VisualizationSystem) -> (),
 	_ensureAgentPart: (VisualizationSystem, Agent) -> BasePart,
-	Step: (VisualizationSystem, number) -> (),
+	_ensureDestinationMarker: (VisualizationSystem, Agent) -> BasePart,
+	_ensureDestinationLine: (VisualizationSystem, Agent) -> BasePart,
+	_ensureShootingLine: (VisualizationSystem, Agent) -> BasePart,
+	_ensureFacingArrowShaft: (VisualizationSystem, Agent) -> BasePart,
+	Step: (VisualizationSystem, number, number) -> (),
 }
 
 -- VisualizationSystemModule is the constructor/static table returned by
@@ -732,12 +864,14 @@ export type Simulation = {
 	agentStore: AgentStore,
 	blackboards: { [TeamId]: BlackboardStore },
 	adapters: Adapters,
+	studioWorldRegistry: StudioWorldRegistry,
 	scheduler: Scheduler,
 	queues: QueuesByName,
 	systemDependencies: SystemDependencies,
 	systems: SimulationSystems,
 	_registerCadence: (Simulation) -> (),
 	_spawnDemoAgents: (Simulation, number) -> (),
+	_spawnDemoAgentsFromStudio: (Simulation, number) -> boolean,
 	Start: (Simulation) -> (),
 	Step: (Simulation, number) -> (),
 }

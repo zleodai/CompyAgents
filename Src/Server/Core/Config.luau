@@ -24,10 +24,24 @@ local Config: Types.Config = {
 		ShowAgentLabels = true,
 	},
 
+	Tests = {
+		Enabled = false,
+		Verbose = true,
+		FailFast = false,
+	},
+
 	AgentBootstrap = {
 		Enabled = true,
 		DemoAgentsPerTeam = 10,
 		TargetAgentsPerTeam = 20,
+	},
+
+	Level = {
+		UseStudioLevel = true,
+		UseConfigSpawnsFallback = true,
+		SpawnTag = "CompySpawn",
+		CoverTag = "CompyCover",
+		ObjectiveTag = "CompyObjective",
 	},
 
 	Cadence = {
@@ -80,6 +94,7 @@ local Config: Types.Config = {
 	Movement = {
 		Speed = 18,
 		WaypointTolerance = 0.35,
+		FacingTurnRateRadiansPerSecond = math.rad(360),
 	},
 
 	Pathing = {
@@ -89,6 +104,7 @@ local Config: Types.Config = {
 	Combat = {
 		Range = 60,
 		DamagePerTick = 6,
+		RequiredAimDot = 0.96,
 	},
 
 	Visualization = {
@@ -96,6 +112,21 @@ local Config: Types.Config = {
 		AgentSize = Vector3.new(2.5, 2.5, 2.5),
 		VerticalOffset = Vector3.new(0, 1.25, 0),
 		LerpAlpha = 0.35,
+		DestinationMarkerSize = Vector3.new(1.5, 0.35, 1.5),
+		DestinationMarkerOffset = Vector3.new(0, 0.2, 0),
+		DestinationLineThickness = 0.18,
+		DestinationLineColor = Color3.fromRGB(255, 221, 87),
+		DestinationLineTransparency = 0.25,
+		ShootingLineThickness = 0.28,
+		ShootingLineLength = 18,
+		ShootingLineColor = Color3.fromRGB(255, 255, 255),
+		ShootingLineTransparency = 0,
+		ShotFlashDuration = 0.18,
+		FacingArrowOffset = Vector3.new(0, 1, 0),
+		FacingArrowLength = 2,
+		FacingArrowShaftThickness = 1,
+		FacingArrowColor = Color3.fromRGB(0, 0, 0),
+		FacingArrowTransparency = 0.05,
 	},
 
 	Teams = {

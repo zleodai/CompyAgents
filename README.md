@@ -15,3 +15,56 @@ rojo serve
 ```
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
+
+## Studio-authored level tags
+
+The server can read Studio-authored `BasePart` instances through
+`CollectionService` tags when `Config.Level.UseStudioLevel` is enabled. The
+current tag names are configured in `Src/Server/Core/Config.luau`.
+
+Tagged instances must be `BasePart`s. Non-part instances with these tags are
+ignored with a warning.
+
+### `CompySpawn`
+
+Used by the demo bootstrap path to spawn agents from Studio parts before falling
+back to config-based spawn origins.
+
+| Attribute | Type | Required | Default | Behavior |
+| --- | --- | --- | --- | --- |
+| `TeamId` | string | No | global | Limits the spawn to one team, such as `Blue` or `Red`. If omitted, the spawn is returned for any team query. |
+| `SpawnOrder` | number | No | `0` | Sorts spawn points within each team. Lower values are used first. Ties sort by full instance name. |
+| `SpawnRadius` | number | No | `0` | When set above `0`, bootstrap spawning picks a random horizontal position within this radius of the spawn part. |
+| `SquadId` | string | No | none | Stored on the spawn record for future squad-specific spawning. It is not used by bootstrap spawning yet. |
+
+The spawn record also stores the part `CFrame`, `Position`, and
+`CFrame.LookVector`. Bootstrap agents use the part look vector as their initial
+facing. If `SpawnRadius` is omitted, agents spawn directly on the part position.
+
+### `CompyCover`
+
+Registered as cover metadata for future cover behavior.
+
+| Attribute | Type | Required | Default | Behavior |
+| --- | --- | --- | --- | --- |
+| `CoverId` | string | No | part `Name` | Stable identifier for the cover point. |
+| `CoverQuality` | number | No | `1` | Numeric quality score stored on the cover record. |
+| `TeamId` | string | No | global | Limits the cover point to one team. If omitted, the cover point is returned for any team query. |
+| `FacingX` | number | No | part look vector | X component of an explicit cover facing vector. |
+| `FacingY` | number | No | part look vector | Y component of an explicit cover facing vector. |
+| `FacingZ` | number | No | part look vector | Z component of an explicit cover facing vector. |
+
+`FacingX`, `FacingY`, and `FacingZ` are only used when all three are present and
+form a non-zero vector. The registry normalizes that vector before storing it.
+
+### `CompyObjective`
+
+Registered as objective metadata for future objective behavior.
+
+| Attribute | Type | Required | Default | Behavior |
+| --- | --- | --- | --- | --- |
+| `ObjectiveId` | string | No | part `Name` | Stable identifier for the objective. |
+| `TeamId` | string | No | global | Limits the objective to one team. If omitted, the objective is returned for any team query. |
+| `Radius` | number | No | `max(part.Size.X, part.Size.Z) / 2` | Interaction or capture radius stored on the objective record. |
+
+The objective record also stores the part `CFrame` and `Position`.

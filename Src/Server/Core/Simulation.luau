@@ -38,6 +38,7 @@ local GridPathfinder = require(CompyServerScripts.Adapters.Pathing.GridPathfinde
 local RobloxPathfinder = require(CompyServerScripts.Adapters.Pathing.RobloxPathfinder)
 local GridWorldQuery = require(CompyServerScripts.Adapters.World.GridWorldQuery)
 local SpatialWorldQuery = require(CompyServerScripts.Adapters.World.SpatialWorldQuery)
+local StudioWorldRegistry = require(CompyServerScripts.Adapters.World.StudioWorldRegistry)
 
 local RemoteEvents = ReplicatedStorage.RemoteEvents
 local DebugPlaybackToggled = RemoteEvents.DebugPlaybackToggled
@@ -47,6 +48,8 @@ local DebugAverageFrameMS = RemoteEvents.DebugAverageFrameMS
 
 local Simulation = {}
 Simulation.__index = Simulation
+
+local TWO_PI = math.pi * 2
 
 local function createAdapters(): Types.Adapters
 	if Config.SimulationMode == "Grid" then
@@ -66,6 +69,20 @@ local function createAdapters(): Types.Adapters
 	}
 end
 
+local function resolveStudioSpawnPosition(spawnPoint: Types.StudioSpawnPoint): Vector3
+	local spawnRadius = spawnPoint.spawnRadius
+
+	if spawnRadius <= 0 then
+		return spawnPoint.position
+	end
+
+	local angle = math.random() * TWO_PI
+	local distance = math.sqrt(math.random()) * spawnRadius
+	local offset = Vector3.new(math.cos(angle) * distance, 0, math.sin(angle) * distance)
+
+	return spawnPoint.position + offset
+end
+
 function Simulation.new(): Types.Simulation
 	local self = setmetatable({}, Simulation)
 
@@ -74,6 +91,7 @@ function Simulation.new(): Types.Simulation
 	self.started = false
 	self.agentStore = AgentStore.new()
 	self.blackboards = {}
+	self.studioWorldRegistry = StudioWorldRegistry.new(Config)
 
 	for teamId in pairs(Config.Teams) do
 		self.blackboards[teamId] = BlackboardStore.new(teamId)
@@ -160,6 +178,21 @@ function Simulation:_registerCadence(): ()
 end
 
 function Simulation:_spawnDemoAgents(count: number): ()
+	if Config.Level.UseStudioLevel then
+		local spawnedFromStudio = self:_spawnDemoAgentsFromStudio(count)
+
+		if spawnedFromStudio then
+			return
+		end
+
+		if not Config.Level.UseConfigSpawnsFallback then
+			warn("[CompyAgent:Simulation] No valid Studio spawn points found and config spawn fallback is disabled")
+			return
+		end
+
+		warn("[CompyAgent:Simulation] No valid Studio spawn points found; using config spawn fallback")
+	end
+
 	for teamId, teamConfig in pairs(Config.Teams) do
 		for index = 1, count do
 			local sideOffset = (index - ((count + 1) / 2)) * teamConfig.SpawnSpacing
@@ -168,6 +201,50 @@ function Simulation:_spawnDemoAgents(count: number): ()
 			self.agentStore:Add(agent)
 		end
 	end
+end
+
+function Simulation:_spawnDemoAgentsFromStudio(count: number): boolean
+	self.studioWorldRegistry:Refresh()
+
+	local spawnsByTeam: { [Types.TeamId]: { Types.StudioSpawnPoint } } = {}
+	local totalAvailable = 0
+
+	for teamId in pairs(Config.Teams) do
+		local spawnPoints = self.studioWorldRegistry:GetSpawnPoints(teamId)
+		spawnsByTeam[teamId] = spawnPoints
+		totalAvailable += #spawnPoints
+	end
+
+	if totalAvailable == 0 then
+		return false
+	end
+
+	for teamId, spawnPoints in pairs(spawnsByTeam) do
+		if #spawnPoints == 0 then
+			warn(("[CompyAgent:Simulation] No Studio spawn points available for team %s; spawning 0 agents"):format(teamId))
+			continue
+		end
+
+		local agentsToSpawn = math.min(count, #spawnPoints)
+		if agentsToSpawn < count then
+			warn(
+				("[CompyAgent:Simulation] Only %d Studio spawn points available for team %s; requested %d agents"):format(
+					agentsToSpawn,
+					teamId,
+					count
+				)
+			)
+		end
+
+		for index = 1, agentsToSpawn do
+			local spawnPoint = spawnPoints[index]
+			local position = resolveStudioSpawnPosition(spawnPoint)
+			local agent = AgentState.create(("%s_%02d"):format(teamId, index), teamId, position, spawnPoint.facing)
+			self.agentStore:Add(agent)
+		end
+	end
+
+	return true
 end
 
 function Simulation:Start(): ()

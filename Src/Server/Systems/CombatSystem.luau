@@ -19,6 +19,20 @@ local function isTargetInRange(config: Types.Config, agent: Types.Agent, target:
 	return (target.transform.position - agent.transform.position).Magnitude <= config.Combat.Range
 end
 
+local function isFacingTarget(config: Types.Config, agent: Types.Agent, target: Types.Agent): boolean
+	local toTarget = target.transform.position - agent.transform.position
+	if toTarget.Magnitude <= 0.001 then
+		return true
+	end
+
+	local facing = agent.transform.facing
+	if facing.Magnitude <= 0.001 then
+		return false
+	end
+
+	return facing.Unit:Dot(toTarget.Unit) >= config.Combat.RequiredAimDot
+end
+
 function CombatSystem.Step(self: Types.CombatSystem, dt: number, now: number): ()
 	self.accumulator = self.accumulator + dt
 	if self.accumulator < self.config.Cadence.CombatInterval then
@@ -36,11 +50,14 @@ function CombatSystem.Step(self: Types.CombatSystem, dt: number, now: number): (
 				target
 				and target.stats.alive
 				and isTargetInRange(self.config, agent, target)
+				and isFacingTarget(self.config, agent, target)
 				and self.worldQuery:HasLineOfSight(agent.transform.position, target.transform.position)
 			then
 				agent.stats.ammo = agent.stats.ammo - 1
 				target.stats.health = math.max(0, target.stats.health - self.config.Combat.DamagePerTick)
 				combat.lastShotAt = now
+				combat.lastShotOrigin = agent.transform.position
+				combat.lastShotTarget = target.transform.position
 				combat.shotCompleted = true
 				combat.shouldFire = false
 
