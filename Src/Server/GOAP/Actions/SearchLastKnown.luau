@@ -1,35 +1,30 @@
---[=[
-	SearchLastKnown
-
-	GOAP action that moves to the blackboard's best enemy sighting and completes
-	after the movement request reaches that position.
-]=]
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+
 local Types = require(CompyServerScripts.Core.Types)
 
-local ACTION: Types.GOAPAction = {
+local Action: Types.GOAPAction = {
 	id = "SearchLastKnown",
 	cost = 3,
 	preconditions = {
 		alive = true,
-		enemyKnown = true,
+		knowsEnemyPosition = true,
+		hasVisibleEnemy = false,
 	},
 	effects = {
 		searchedEnemyPosition = true,
 	},
-	checkAction = function(controller: Types.AgentController, _context: Types.GOAPActionContext): boolean
-		return controller:HasReachedDestination()
+	check = function(controller: Types.AgentController, _context: Types.GOAPActionContext): boolean
+		return controller:GetBestVisibleEnemy() ~= nil or controller:HasReachedDestination()
 	end,
-	onActionStart = function(controller: Types.AgentController, _context: Types.GOAPActionContext): ()
+	start = function(controller: Types.AgentController, _context: Types.GOAPActionContext): ()
 		controller:MoveForAction("SearchLastKnown")
 	end,
-	onActionUpdate = function(controller: Types.AgentController, _context: Types.GOAPActionContext): ()
-		controller:MoveForAction("SearchLastKnown")
-	end,
-	onActionEnd = function(_controller: Types.AgentController, _context: Types.GOAPActionContext): ()
+	update = function(controller: Types.AgentController, _context: Types.GOAPActionContext): ()
+		if controller:GetBestKnownEnemyPosition() == nil then
+			controller:RequestPlan("search_enemy_lost")
+		end
 	end,
 }
 
-return ACTION
+return Action

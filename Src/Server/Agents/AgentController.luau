@@ -1,27 +1,11 @@
---[=[
-	AgentController
-
-	Per-agent behavior facade passed into GOAP action modules. The controller
-	owns behavior requests such as movement, cover, shooting, and lifecycle
-	cleanup while systems only react to the resulting AgentState data.
-]=]
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+
+local WorldQuery = require(CompyServerScripts.World.WorldQuery)
 local Types = require(CompyServerScripts.Core.Types)
 
 local AgentController = {}
 AgentController.__index = AgentController
-
-local function positionsClose(a: Vector3, b: Vector3, tolerance: number): boolean
-	return (a - b).Magnitude <= tolerance
-end
-
-local function distanceScore(fromPosition: Vector3, toPosition: Vector3): number
-	local offset = toPosition - fromPosition
-	local distanceSquared = offset:Dot(offset)
-	return 1 / math.max(distanceSquared, 0.001)
-end
 
 local function rotateTowards(currentDirection: Vector3, desiredDirection: Vector3, maxRadians: number): Vector3
 	if desiredDirection.Magnitude <= 0.001 then
@@ -46,177 +30,123 @@ local function rotateTowards(currentDirection: Vector3, desiredDirection: Vector
 	return blended.Unit
 end
 
-function AgentController.RequestPlan(self: Types.AgentController, now: number?, reason: string?): ()
-	local agent = self.agentState
-	agent.decision.needsPlan = true
-	agent.decision.lastPlanReason = reason or "requested"
-	agent.decision.nextThinkAt = math.max(agent.decision.nextThinkAt, now or 0)
+function AgentController:RequestPlan(reason: string): ()
+	self.runtime:RequestReplan(reason)
 end
 
-function AgentController.ClearPlan(self: Types.AgentController): ()
-	local agent = self.agentState
-	agent.decision.currentGoal = nil
-	agent.decision.currentPlan = nil
-	agent.decision.currentActionIndex = 1
-	agent.decision.actionRuntime.actionId = nil
-	agent.decision.actionRuntime.started = false
-	agent.decision.actionRuntime.startedAt = 0
-
-	agent.movement.destination = nil
-	agent.movement.path = nil
-	agent.movement.pathIndex = 1
-	agent.movement.needsPath = false
-	agent.movement.pathQueued = false
-	agent.movement.arrived = false
-	agent.movement.mode = "Idle"
-
-	agent.combat.targetId = nil
-	agent.combat.shouldFire = false
-	agent.combat.shotCompleted = false
+function AgentController:ClearPlan(): ()
+	self.planner:ClearPlan()
 end
 
-function AgentController.Kill(self: Types.AgentController): ()
-	local agent = self.agentState
-	agent.stats.alive = false
-	self:ClearPlan()
+function AgentController:Kill(): ()
+	self.runtime:Kill()
 end
 
-function AgentController.MoveTo(self: Types.AgentController, destination: Vector3): ()
-	local agent = self.agentState
-	local clampedDestination = self.worldQuery:ClampToWorld(destination)
+function AgentController:Reload(): ()
+	self.combat:Reload()
+end
 
-	if positionsClose(agent.transform.position, clampedDestination, self.config.Movement.WaypointTolerance) then
-		agent.movement.destination = nil
-		agent.movement.path = nil
-		agent.movement.pathIndex = 1
-		agent.movement.needsPath = false
-		agent.movement.pathQueued = false
-		agent.movement.arrived = true
-		agent.movement.mode = "Idle"
-		return
+function AgentController:MoveTo(destination: Vector3): ()
+	self.movement:SetDestination(self.environment:ClampDestination(destination))
+end
+
+function AgentController:StopMovement(): ()
+	self.movement:Stop()
+end
+
+function AgentController:MoveForAction(actionId: string): ()
+	local destination = nil
+
+	if actionId == "TakeCover" then
+		destination = self.environment:GetNearestCover(self.state.position, self.state.teamId)
+	elseif actionId == "Retreat" then
+		destination = WorldQuery.GetRetreatPosition(self.state, self.config)
+	else
+		destination = WorldQuery.GetAdvancePosition(self.state, self.blackboard)
 	end
 
-	local currentDestination = agent.movement.destination
-	if currentDestination and positionsClose(currentDestination, clampedDestination, 0.01) then
-		return
+	if destination then
+		self:MoveTo(destination)
+	else
+		self:RequestPlan(actionId .. "_missing_destination")
 	end
-
-	agent.movement.destination = clampedDestination
-	agent.movement.path = nil
-	agent.movement.pathIndex = 1
-	agent.movement.needsPath = true
-	agent.movement.pathQueued = false
-	agent.movement.arrived = false
 end
 
-function AgentController.MoveForAction(self: Types.AgentController, actionId: Types.ActionId): ()
-	local destination = self.worldQuery:ResolveActionDestination(self.agentState, actionId, self.blackboard)
-	self:MoveTo(destination)
+function AgentController:LookAtPosition(targetPosition: Vector3, dt: number): ()
+	local desiredDirection = targetPosition - self.state.position
+	local maxRadians = self.config.Combat.TurnRateRadiansPerSecond * dt
+	self.state.facing = rotateTowards(self.state.facing, desiredDirection, maxRadians)
 end
 
-function AgentController.TakeCoverAt(self: Types.AgentController, coverPosition: Vector3): ()
-	self:MoveTo(coverPosition)
+function AgentController:ShootAtTarget(targetId: string): ()
+	self.combat:ShootAtTarget(targetId)
 end
 
-function AgentController.LookAtPosition(self: Types.AgentController, targetPosition: Vector3, dt: number): ()
-	local agent = self.agentState
-	local desiredDirection = targetPosition - agent.transform.position
-	local maxRadians = self.config.Movement.FacingTurnRateRadiansPerSecond * dt
-	agent.transform.facing = rotateTowards(agent.transform.facing, desiredDirection, maxRadians)
+function AgentController:StopShooting(): ()
+	self.combat:StopShooting()
 end
 
-function AgentController.ShootAtTarget(self: Types.AgentController, targetId: Types.AgentId): ()
-	local combat = self.agentState.combat
-
-	if combat.targetId ~= targetId then
-		combat.shotCompleted = false
-	end
-
-	combat.targetId = targetId
-	combat.shouldFire = true
+function AgentController:SetInCover(inCover: boolean): ()
+	self.state.inCover = inCover
 end
 
-function AgentController.StopShooting(self: Types.AgentController): ()
-	local combat = self.agentState.combat
-	combat.targetId = nil
-	combat.shouldFire = false
-	combat.shotCompleted = false
-end
+function AgentController:GetBestVisibleEnemy(): Types.PerceptionContact?
+	local bestContact = nil
+	local bestDistance = math.huge
 
-function AgentController.SetInCover(self: Types.AgentController, inCover: boolean): ()
-	self.agentState.tactical.inCover = inCover
-end
-
-function AgentController.GetBestVisibleEnemy(self: Types.AgentController): Types.PerceptionContact?
-	local agentPosition = self.agentState.transform.position
-	local bestContact: Types.PerceptionContact? = nil
-	local bestScore = -math.huge
-
-	for _, contact in ipairs(self.agentState.perception.visibleEnemies) do
-		local target = self.agentStore:Get(contact.agentId)
-		if target and target.stats.alive then
-			local score = distanceScore(agentPosition, target.transform.position)
-			if score > bestScore then
-				bestContact = contact
-				bestScore = score
-			end
+	for _, contact in ipairs(self.state.visibleEnemies) do
+		local distance = (contact.position - self.state.position).Magnitude
+		if distance < bestDistance then
+			bestDistance = distance
+			bestContact = contact
 		end
 	end
 
 	return bestContact
 end
 
-function AgentController.GetBestKnownEnemyPosition(self: Types.AgentController): Vector3?
+function AgentController:GetBestKnownEnemyPosition(): Vector3?
 	local visibleEnemy = self:GetBestVisibleEnemy()
 	if visibleEnemy then
 		return visibleEnemy.position
 	end
 
-	local sighting = self.blackboard:GetBestEnemySighting()
-	if sighting then
-		return sighting.position
+	local knownEnemy = self.memory:GetBestKnownEnemy()
+	if knownEnemy then
+		return knownEnemy.position
 	end
 
-	return nil
+	local sighting = self.blackboard:GetBestEnemySighting()
+	return sighting and sighting.position or nil
 end
 
-function AgentController.HasReachedDestination(self: Types.AgentController): boolean
-	return self.agentState.movement.arrived
+function AgentController:HasReachedDestination(): boolean
+	return self.state.arrived
 end
 
-function AgentController.HasCompletedShot(self: Types.AgentController): boolean
-	return self.agentState.combat.shotCompleted
+function AgentController:HasCompletedShot(): boolean
+	return self.state.shotCompleted
 end
 
-function AgentController.GetActionElapsed(self: Types.AgentController, now: number): number
-	return now - self.agentState.decision.actionRuntime.startedAt
+function AgentController:HasCompletedReload(): boolean
+	return self.state.reloading
 end
 
-function AgentController.new(agentState: Types.Agent, deps: Types.AgentControllerDependencies): Types.AgentController
-	local self: Types.AgentController = {
-		agentState = agentState,
-		config = deps.config,
-		agentStore = deps.agentStore,
-		blackboard = deps.blackboard,
-		worldQuery = deps.worldQuery,
-		RequestPlan = AgentController.RequestPlan,
-		ClearPlan = AgentController.ClearPlan,
-		Kill = AgentController.Kill,
-		MoveTo = AgentController.MoveTo,
-		MoveForAction = AgentController.MoveForAction,
-		TakeCoverAt = AgentController.TakeCoverAt,
-		LookAtPosition = AgentController.LookAtPosition,
-		ShootAtTarget = AgentController.ShootAtTarget,
-		StopShooting = AgentController.StopShooting,
-		SetInCover = AgentController.SetInCover,
-		GetBestVisibleEnemy = AgentController.GetBestVisibleEnemy,
-		GetBestKnownEnemyPosition = AgentController.GetBestKnownEnemyPosition,
-		HasReachedDestination = AgentController.HasReachedDestination,
-		HasCompletedShot = AgentController.HasCompletedShot,
-		GetActionElapsed = AgentController.GetActionElapsed,
-	}
-	setmetatable(self, AgentController)
+function AgentController:GetActionElapsed(now: number): number
+	return now - self.state.actionStartedAt
+end
 
+function AgentController.new(runtime: Types.AgentRuntime): Types.AgentController
+	local self = setmetatable({}, AgentController)
+	self.runtime = runtime
+	self.state = runtime.state
+	self.config = runtime.config
+	self.blackboard = runtime.blackboard
+	self.environment = runtime.environment
+	self.memory = runtime.memory
+	self.movement = runtime.movement
+	self.combat = runtime.combat
+	self.planner = runtime.planner
 	return self
 end
 

@@ -1,15 +1,9 @@
---[=[
-	AttackVisibleEnemy
-
-	GOAP action that requests one abstract shot against the best visible enemy.
-	CombatSystem performs the shot from AgentCombat data and marks completion.
-]=]
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+
 local Types = require(CompyServerScripts.Core.Types)
 
-local ACTION: Types.GOAPAction = {
+local Action: Types.GOAPAction = {
 	id = "AttackVisibleEnemy",
 	cost = 1,
 	preconditions = {
@@ -20,31 +14,32 @@ local ACTION: Types.GOAPAction = {
 	effects = {
 		enemyThreatened = true,
 	},
-	checkAction = function(controller: Types.AgentController, _context: Types.GOAPActionContext): boolean
+	check = function(controller: Types.AgentController, _context: Types.GOAPActionContext): boolean
 		return controller:HasCompletedShot()
 	end,
-	onActionStart = function(controller: Types.AgentController, context: Types.GOAPActionContext): ()
+	start = function(controller: Types.AgentController, context: Types.GOAPActionContext): ()
+		controller:StopMovement()
 		local target = controller:GetBestVisibleEnemy()
 		if target then
 			controller:LookAtPosition(target.position, context.dt)
 			controller:ShootAtTarget(target.agentId)
 		else
-			controller:RequestPlan(context.now, "attack_target_lost")
+			controller:RequestPlan("attack_target_lost")
 		end
 	end,
-	onActionUpdate = function(controller: Types.AgentController, context: Types.GOAPActionContext): ()
+	update = function(controller: Types.AgentController, context: Types.GOAPActionContext): ()
 		local target = controller:GetBestVisibleEnemy()
 		if target then
 			controller:LookAtPosition(target.position, context.dt)
 			controller:ShootAtTarget(target.agentId)
 		else
 			controller:StopShooting()
-			controller:RequestPlan(context.now, "attack_target_lost")
+			controller:RequestPlan("attack_target_lost")
 		end
 	end,
-	onActionEnd = function(controller: Types.AgentController, _context: Types.GOAPActionContext): ()
+	finish = function(controller: Types.AgentController, _context: Types.GOAPActionContext): ()
 		controller:StopShooting()
 	end,
 }
 
-return ACTION
+return Action

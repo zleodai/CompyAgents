@@ -25,6 +25,12 @@
         },
         "DebugAverageFrameMS": {
           "$className": "RemoteFunction"
+        },
+        "DebugSetAgentInDepthDebugActive": {
+          "$className": "RemoteEvent"
+        },
+        "DebugGetAgentInDepthDebugText": {
+          "$className": "RemoteFunction"
         }
       },
       "CompyAgent": {

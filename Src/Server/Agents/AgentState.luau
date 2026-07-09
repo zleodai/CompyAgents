@@ -1,80 +1,59 @@
---[=[
-	AgentState
-
-	Factory for the pure-data agent record used by the simulation. This module
-	contains no Roblox Instance ownership so agents can later be driven by grid,
-	raycast, humanoid, or custom movement adapters.
-]=]
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
-local Types = require(CompyServerScripts.Core.Types)
 
+local Types = require(CompyServerScripts.Core.Types)
 
 local AgentState = {}
 
-function AgentState.create(id: Types.AgentId, teamId: Types.TeamId, position: Vector3, facing: Vector3?): Types.Agent
+function AgentState.create(
+	id: string,
+	teamId: string,
+	position: Vector3,
+	facing: Vector3?,
+	config: Types.Config
+): Types.AgentState
 	return {
 		id = id,
 		teamId = teamId,
-
-		transform = {
-			position = position,
-			facing = facing or Vector3.new(0, 0, -1),
-		},
-
-		stats = {
-			health = 100,
-			ammo = 30,
-			alive = true,
-		},
-
-		decision = {
-			currentGoal = nil,
-			currentPlan = nil,
-			currentActionIndex = 1,
-			needsPlan = true,
-			planningQueued = false,
-			nextThinkAt = 0,
-			lastPlanReason = "bootstrap",
-			actionRuntime = {
-				actionId = nil,
-				started = false,
-				startedAt = 0,
-			},
-		},
-
-		movement = {
-			mode = "Idle",
-			destination = nil,
-			path = nil,
-			pathIndex = 1,
-			needsPath = false,
-			pathQueued = false,
-			nextPathAt = 0,
-			arrived = false,
-		},
-
-		combat = {
-			targetId = nil,
-			shouldFire = false,
-			shotCompleted = false,
-			lastShotAt = 0,
-			lastShotOrigin = nil,
-			lastShotTarget = nil,
-		},
-
-		perception = {
-			visibleEnemies = {},
-			lastSeenEnemies = {},
-			nextSenseAt = 0,
-			sensingQueued = false,
-		},
-
-		tactical = {
-			inCover = false,
-			suppressed = false,
-		},
+		alive = true,
+		health = config.Agent.MaxHealth,
+		ammo = config.Agent.MaxAmmo,
+		position = position,
+		facing = facing or Vector3.new(0, 0, -1),
+		model = nil,
+		humanoid = nil,
+		rootPart = nil,
+		head = nil,
+		currentGoal = nil,
+		currentActionId = nil,
+		currentPlan = nil,
+		currentActionIndex = 1,
+		actionStarted = false,
+		actionStartedAt = 0,
+		needsPlan = true,
+		replanReason = "spawned",
+		visibleEnemies = {},
+		knownEnemies = {},
+		inCover = false,
+		destination = nil,
+		moving = false,
+		arrived = false,
+		targetId = nil,
+		toReload = false,
+		reloadEndTime = -math.huge,
+		reloading = false,
+		shotCompleted = false,
+		lastShotAt = -math.huge,
+		lastShotOrigin = nil,
+		lastShotTarget = nil,
+		lastRaycastAt = -math.huge,
+		lastRaycastOrigin = nil,
+		lastRaycastEnd = nil,
+		debugGoal = "None",
+		debugAction = "None",
+		inDepthDebugUIActive = false,
+		inDepthDebugUIText = "",
+		inDepthDebugUIPlanText = "",
 	}
 end
 

@@ -1,29 +1,18 @@
---[=[
-	Intents
-
-	Helpers for publishing short-lived tactical intent records. Intent claims let
-	decentralized agents avoid duplicated roles without introducing a squad
-	commander.
-]=]
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+
 local Types = require(CompyServerScripts.Core.Types)
 
 local Intents = {}
 
-function Intents.PublishRole(
+function Intents.Publish(
 	blackboard: Types.BlackboardStore,
-	agentId: Types.AgentId,
-	role: string,
-	target: string?,
+	agentId: string,
+	intent: Types.IntentData,
 	now: number,
-	duration: number?
+	duration: number
 ): ()
-	blackboard:PublishIntent(agentId, {
-		role = role,
-		target = target,
-	}, now, duration or 2)
+	blackboard:PublishIntent(agentId, intent, now, duration)
 end
 
 return Intents

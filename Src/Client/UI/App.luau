@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local React = require(ReplicatedStorage.Packages.React)
 local AverageFrameTooltip = require(script.Parent.Components.AverageFrameTooltip)
+local InDepthAgentDebugPanel = require(script.Parent.Components.InDepthAgentDebugPanel)
 local SpeedControlPanel = require(script.Parent.Components.SpeedControlPanel)
 
 local function App()
@@ -15,6 +16,7 @@ local function App()
 			ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		}, {
 			AverageFrameTooltip = React.createElement(AverageFrameTooltip),
+			InDepthAgentDebugPanel = React.createElement(InDepthAgentDebugPanel),
 			SpeedControlPanel = React.createElement(SpeedControlPanel),
 		}),
 	})

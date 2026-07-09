@@ -1,35 +1,22 @@
---[=[
-	Reservations
-
-	Convenience helpers for blackboard resource claims. These functions encode
-	resource naming conventions for cover slots, routes, and future tactical
-	resources.
-]=]
-
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+
 local Types = require(CompyServerScripts.Core.Types)
 
 local Reservations = {}
 
-function Reservations.TryReserveCover(
+function Reservations.TryReserve(
 	blackboard: Types.BlackboardStore,
-	coverId: string,
-	ownerId: Types.AgentId,
+	resourceId: string,
+	ownerId: string,
 	now: number,
-	duration: number?
+	duration: number
 ): boolean
-	return blackboard:Reserve("Cover:" .. tostring(coverId), ownerId, now, duration or 2)
+	return blackboard:Reserve(resourceId, ownerId, now, duration)
 end
 
-function Reservations.TryReserveRoute(
-	blackboard: Types.BlackboardStore,
-	routeId: string,
-	ownerId: Types.AgentId,
-	now: number,
-	duration: number?
-): boolean
-	return blackboard:Reserve("Route:" .. tostring(routeId), ownerId, now, duration or 3)
+function Reservations.Release(blackboard: Types.BlackboardStore, resourceId: string, ownerId: string): ()
+	blackboard:ReleaseReservation(resourceId, ownerId)
 end
 
 return Reservations

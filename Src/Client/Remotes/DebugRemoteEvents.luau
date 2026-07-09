@@ -8,6 +8,7 @@ DebugRemoteEvents.Names = {
 	PlaybackToggled = "DebugPlaybackToggled",
 	SpeedDecreased = "DebugSpeedDecreased",
 	SpeedIncreased = "DebugSpeedIncreased",
+	SetAgentInDepthDebugActive = "DebugSetAgentInDepthDebugActive",
 }
 
 local remoteEventsFolder = ReplicatedStorage:WaitForChild("RemoteEvents")
@@ -29,6 +30,10 @@ end
 
 function DebugRemoteEvents.fireSpeedIncreased(speedScale: number): ()
 	getRemoteEvent(DebugRemoteEvents.Names.SpeedIncreased):FireServer(speedScale)
+end
+
+function DebugRemoteEvents.fireAgentInDepthDebugActiveChanged(agentId: string, isActive: boolean): ()
+	getRemoteEvent(DebugRemoteEvents.Names.SetAgentInDepthDebugActive):FireServer(agentId, isActive)
 end
 
 return DebugRemoteEvents

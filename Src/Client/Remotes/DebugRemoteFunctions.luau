@@ -6,6 +6,7 @@ local DebugRemoteFunctions = {}
 
 DebugRemoteFunctions.Names = {
 	AverageFrameMS = "DebugAverageFrameMS",
+	AgentInDepthDebugText = "DebugGetAgentInDepthDebugText",
 }
 
 local REMOTE_FUNCTION_REQUESTS_ENABLED = true
@@ -60,6 +61,18 @@ function DebugRemoteFunctions.requestAverageFrameMS(onResult: AverageFrameMSHand
 	return function(): ()
 		isActive = false
 	end
+end
+
+function DebugRemoteFunctions.getAgentInDepthDebugText(agentId: string): string
+	local didInvoke, result = pcall(function()
+		return getRemoteFunction(DebugRemoteFunctions.Names.AgentInDepthDebugText):InvokeServer(agentId)
+	end)
+
+	if didInvoke and type(result) == "string" then
+		return result
+	end
+
+	return ""
 end
 
 return DebugRemoteFunctions

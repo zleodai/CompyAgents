@@ -1,28 +1,28 @@
 --[=[
-	Bootstraps the CompyAgent server simulation.
-
-	This script is the only server Script entrypoint. It creates the data-first
-	simulation and advances it from RunService.Heartbeat.
+	Bootstraps the CompyAgent server runtime or runtime tests.
 ]=]
 
-local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+
 local CompyServerScripts = ServerScriptService.CompyAgent
-local Config = require(CompyServerScripts.Core.Config)
+local CompySharedScripts = ReplicatedStorage.CompyAgent
+
+local Config = require(CompySharedScripts.Config)
 local Types = require(CompyServerScripts.Core.Types)
 
 if Config.Tests.Enabled then
 	local TestRunner = require(CompyServerScripts.Tests.TestRunner)
 	local summary: Types.TestSummary = TestRunner.RunAll()
 	print(("[CompyAgent:Tests] Completed %d tests with %d failures"):format(summary.total, summary.failed))
+
+	if summary.failed > 0 then
+		error(("[CompyAgent:Tests] %d runtime tests failed"):format(summary.failed))
+	end
 else
 	local Simulation = require(CompyServerScripts.Core.Simulation)
-	local simulation: Types.Simulation = Simulation.new()
+	local simulation: Types.Simulation = Simulation.new(Config)
 	simulation:Start()
-
-	RunService.Heartbeat:Connect(function(deltaTime: number): ()
-		simulation:Step(deltaTime)
-	end)
 
 	print("[CompyAgent] Server simulation started")
 end
