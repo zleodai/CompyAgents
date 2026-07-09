@@ -19,6 +19,48 @@ local function getFlatUnit(vector: Vector3): Vector3?
 	return flat.Unit
 end
 
+local function rotateTowards(currentDirection: Vector3, desiredDirection: Vector3, maxRadians: number): Vector3
+	if desiredDirection.Magnitude <= 0.001 then
+		return currentDirection
+	end
+
+	local desiredUnit = desiredDirection.Unit
+	local currentUnit = currentDirection.Magnitude > 0.001 and currentDirection.Unit or desiredUnit
+	local dot = math.clamp(currentUnit:Dot(desiredUnit), -1, 1)
+	local angle = math.acos(dot)
+
+	if angle <= maxRadians or angle <= 0.001 then
+		return desiredUnit
+	end
+
+	local alpha = math.clamp(maxRadians / angle, 0, 1)
+	local blended = currentUnit:Lerp(desiredUnit, alpha)
+	if blended.Magnitude <= 0.001 then
+		return desiredUnit
+	end
+
+	return blended.Unit
+end
+
+local function applyFacingToModel(state: Types.AgentState, facing: Vector3): ()
+	local flatFacing = getFlatUnit(facing)
+	if not flatFacing then
+		return
+	end
+
+	local rootPart = state.rootPart
+	if rootPart then
+		rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + flatFacing)
+		return
+	end
+
+	local model = state.model
+	if model then
+		local pivot = model:GetPivot()
+		model:PivotTo(CFrame.lookAt(pivot.Position, pivot.Position + flatFacing))
+	end
+end
+
 function MovementController:_syncFromModel(): ()
 	local rootPart = self.state.rootPart
 	if not rootPart then
@@ -89,6 +131,19 @@ function MovementController:SetDestination(destination: Vector3): ()
 
 	self.state.destination = destination
 	self.state.arrived = false
+end
+
+function MovementController:FaceToward(targetPosition: Vector3, dt: number): ()
+	local desiredDirection = getFlatUnit(targetPosition - self.state.position)
+	if not desiredDirection then
+		return
+	end
+
+	local currentDirection = getFlatUnit(self.state.facing) or desiredDirection
+	local maxRadians = self.config.Combat.TurnRateRadiansPerSecond * dt
+	local facing = rotateTowards(currentDirection, desiredDirection, maxRadians)
+	self.state.facing = facing
+	applyFacingToModel(self.state, facing)
 end
 
 function MovementController:Stop(): ()

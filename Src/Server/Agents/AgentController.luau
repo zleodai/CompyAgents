@@ -7,29 +7,6 @@ local Types = require(CompyServerScripts.Core.Types)
 local AgentController = {}
 AgentController.__index = AgentController
 
-local function rotateTowards(currentDirection: Vector3, desiredDirection: Vector3, maxRadians: number): Vector3
-	if desiredDirection.Magnitude <= 0.001 then
-		return currentDirection
-	end
-
-	local desiredUnit = desiredDirection.Unit
-	local currentUnit = currentDirection.Magnitude > 0.001 and currentDirection.Unit or desiredUnit
-	local dot = math.clamp(currentUnit:Dot(desiredUnit), -1, 1)
-	local angle = math.acos(dot)
-
-	if angle <= maxRadians or angle <= 0.001 then
-		return desiredUnit
-	end
-
-	local alpha = math.clamp(maxRadians / angle, 0, 1)
-	local blended = currentUnit:Lerp(desiredUnit, alpha)
-	if blended.Magnitude <= 0.001 then
-		return desiredUnit
-	end
-
-	return blended.Unit
-end
-
 function AgentController:RequestPlan(reason: string): ()
 	self.runtime:RequestReplan(reason)
 end
@@ -73,9 +50,7 @@ function AgentController:MoveForAction(actionId: string): ()
 end
 
 function AgentController:LookAtPosition(targetPosition: Vector3, dt: number): ()
-	local desiredDirection = targetPosition - self.state.position
-	local maxRadians = self.config.Combat.TurnRateRadiansPerSecond * dt
-	self.state.facing = rotateTowards(self.state.facing, desiredDirection, maxRadians)
+	self.movement:FaceToward(targetPosition, dt)
 end
 
 function AgentController:ShootAtTarget(targetId: string): ()

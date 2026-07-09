@@ -4,7 +4,7 @@ local CompyServerScripts = ServerScriptService.CompyAgent
 local Types = require(CompyServerScripts.Core.Types)
 
 local GoalDefinitions: { Types.GOAPGoalDefinition } = {
-	require(CompyServerScripts.GOAP.Goals.Survive),
+	-- require(CompyServerScripts.GOAP.Goals.Survive),
 	require(CompyServerScripts.GOAP.Goals.PressureVisibleEnemy),
 	require(CompyServerScripts.GOAP.Goals.SearchEnemyPosition),
 	require(CompyServerScripts.GOAP.Goals.Hold),

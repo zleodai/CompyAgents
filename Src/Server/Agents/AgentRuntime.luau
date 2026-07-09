@@ -15,8 +15,6 @@ local Types = require(CompyServerScripts.Core.Types)
 local AgentRuntime = {}
 AgentRuntime.__index = AgentRuntime
 
-local nextThinkStep = 0
-
 function AgentRuntime:Start(): ()
 	if self.running then
 		return
@@ -123,9 +121,9 @@ end
 function AgentRuntime:_runLoop(dt: number): ()
 	local now = os.clock()
 
-	if now > nextThinkStep then
+	if now > self.nextThinkStep then
 		self:TickBehavior(now, dt)
-		nextThinkStep = now + self.config.Agent.ThinkInterval
+		self.nextThinkStep = now + self.config.Agent.ThinkInterval
 	end
 end
 
@@ -149,6 +147,8 @@ function AgentRuntime.new(deps: Types.AgentRuntimeDeps): Types.AgentRuntime
 	self.planner = PlannerController.new(self)
 	self.controller.planner = self.planner
 	self.vision = VisionController.new(self)
+
+	self.nextThinkStep = -math.huge
 
 	return self
 end

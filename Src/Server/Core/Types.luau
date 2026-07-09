@@ -180,6 +180,7 @@ export type AgentState = {
 	debugAction: string,
 	inDepthDebugUIActive: boolean,
 	inDepthDebugUIText: string,
+	inDepthDebugUIPlanText: string,
 }
 
 export type AgentEvent = {
@@ -376,6 +377,7 @@ export type MovementController = {
 	lastDestination: Vector3?,
 	connections: { RBXScriptConnection },
 	SetDestination: (MovementController, Vector3) -> (),
+	FaceToward: (MovementController, Vector3, number) -> (),
 	Stop: (MovementController) -> (),
 	Tick: (MovementController, number) -> (),
 	Destroy: (MovementController) -> (),
@@ -460,6 +462,7 @@ export type AgentRuntime = {
 	planner: PlannerController,
 	vision: VisionController,
 	running: boolean,
+	nextThinkStep: number,
 	thread: thread?,
 	Start: (AgentRuntime) -> (),
 	Stop: (AgentRuntime) -> (),
