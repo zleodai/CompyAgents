@@ -2,7 +2,7 @@
 
 local NoobPathConfig = {
 	Enabled = true,
-	Precise = false,
+	Precise = true,
 	Timeout = true,
 	Visualize = false,
 	AgentParams = {

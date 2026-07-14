@@ -355,6 +355,22 @@ local function prepareWeaponModel(model: Model, animatedParts: { string }): Base
 	return grip
 end
 
+local HOLSTER_HELPER_PART_NAMES = {
+	Grip = true,
+	Middle = true,
+	AimPart = true,
+}
+
+local function hideHolsterHelperParts(model: Model): ()
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") and HOLSTER_HELPER_PART_NAMES[descendant.Name] then
+			descendant.Transparency = 1
+			descendant.CastShadow = false
+			descendant.CanQuery = false
+		end
+	end
+end
+
 local function createRigJoint(animBase: BasePart, arm: BasePart, name: string, x: number): Motor6D
 	local existing = animBase:FindFirstChild(name)
 	if existing and existing:IsA("Motor6D") then
@@ -568,6 +584,7 @@ function SPHController._showHolster(self: SPHController): ()
 	local model = resolveHolsterModelTemplate(self.weaponName):Clone()
 	model.Name = `Holster_{self.weaponName}`
 	local grip = prepareWeaponModel(model, {})
+	hideHolsterHelperParts(model)
 	model.Parent = self.character
 	local motor = Instance.new("Motor6D")
 	motor.Name = `Holster_{self.weaponName}`
