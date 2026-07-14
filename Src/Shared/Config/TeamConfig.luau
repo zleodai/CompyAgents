@@ -1,3 +1,5 @@
+--!strict
+
 local TeamConfig = {
 	Blue = {
 		Color = Color3.fromRGB(55, 125, 255),

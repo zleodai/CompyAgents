@@ -15,9 +15,9 @@ local function App()
 			ResetOnSpawn = false,
 			ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		}, {
-			AverageFrameTooltip = React.createElement(AverageFrameTooltip),
-			InDepthAgentDebugPanel = React.createElement(InDepthAgentDebugPanel),
-			SpeedControlPanel = React.createElement(SpeedControlPanel),
+			-- AverageFrameTooltip = React.createElement(AverageFrameTooltip),
+			-- InDepthAgentDebugPanel = React.createElement(InDepthAgentDebugPanel),
+			-- SpeedControlPanel = React.createElement(SpeedControlPanel),
 		}),
 	})
 end

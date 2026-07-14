@@ -1,3 +1,5 @@
+--!strict
+
 local TestConfig = {
 	Enabled = false,
 	Verbose = true,

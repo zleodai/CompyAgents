@@ -1,8 +1,10 @@
+--!strict
+
 local NoobPathConfig = {
 	Enabled = true,
-	Precise = true,
+	Precise = false,
 	Timeout = true,
-	Visualize = true,
+	Visualize = false,
 	AgentParams = {
 		AgentRadius = 2,
 		AgentHeight = 5,

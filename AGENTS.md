@@ -1,5 +1,5 @@
 # Agent Instructions
 
-Review `CODEBASE_RULES.md` for general codebase rules.
+Obsidian files are found in "C:\Users\Leo\Documents\files\Obsiddy\CompyAgent"
 
-Review `ARCHITECTURE_RULES.md` for architectural rules.
+Whenever `Src/Server/Integrations/Spearhead/SPHController.luau` changes, update the canonical usage documentation at `C:\Users\Leo\Documents\files\Obsiddy\CompyAgent\Docs\SPHController.md` in the same task.

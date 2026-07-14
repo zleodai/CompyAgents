@@ -18,9 +18,9 @@ For more help, check out [the Rojo documentation](https://rojo.space/docs).
 
 ## Studio-authored level tags
 
-The server can read Studio-authored instances through
-`CollectionService` tags when `Config.Level.UseStudioLevel` is enabled. The
-current tag names are configured in `Src/Server/Core/Config.luau`.
+The server reads Studio-authored instances through `CollectionService` tags
+when `Config.Simulation.UseStudioLevel` is enabled. Tag names and fallback
+behavior are configured in `Src/Shared/Config/SimulationConfig.luau`.
 
 Spawn, cover, and objective tags must be placed on `BasePart`s. Humanoid tags
 must be placed on `Model`s that contain a `Humanoid`. Invalid tagged instances
@@ -47,13 +47,14 @@ uses it; with two spawn points, agents alternate between them.
 
 ### `CompyCover`
 
-Registered as cover metadata for future cover behavior.
+Registered as cover locations used by Agent vision and cover behavior.
 
 | Attribute | Type | Required | Default | Behavior |
 | --- | --- | --- | --- | --- |
 | `CoverId` | string | No | part `Name` | Stable identifier for the cover point. |
 | `CoverQuality` | number | No | `1` | Numeric quality score stored on the cover record. |
 | `TeamId` | string | No | global | Limits the cover point to one team. If omitted, the cover point is returned for any team query. |
+| `Posture` | string | No | `Crouching` | Assigns the point to either the crouching or proning cover collection. Use `Crouching` or `Proning`. |
 | `FacingX` | number | No | part look vector | X component of an explicit cover facing vector. |
 | `FacingY` | number | No | part look vector | Y component of an explicit cover facing vector. |
 | `FacingZ` | number | No | part look vector | Z component of an explicit cover facing vector. |
@@ -63,7 +64,7 @@ form a non-zero vector. The registry normalizes that vector before storing it.
 
 ### `CompyObjective`
 
-Registered as objective metadata for future objective behavior.
+Registered as objective locations used by Agent vision and capture behavior.
 
 | Attribute | Type | Required | Default | Behavior |
 | --- | --- | --- | --- | --- |
@@ -75,7 +76,9 @@ The objective record also stores the part `CFrame` and `Position`.
 
 ### `CompyHumanoid`
 
-Registered as humanoid model metadata for future agent model selection.
+Registered as humanoid templates for spawned agents. Matching templates are
+cloned using their `Frequency` weights. If none match, Simulation creates a
+default R15 model.
 
 | Attribute | Type | Required | Default | Behavior |
 | --- | --- | --- | --- | --- |
