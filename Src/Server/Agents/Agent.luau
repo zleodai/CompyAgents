@@ -6,44 +6,26 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
+local Types = require(CompyServerScripts.Core.Types)
 local Enums = require(CompyServerScripts.Core.Enums)
-local RifleData = require(CompyServerScripts.Data.RifleData)
-local Actions = require(CompyServerScripts.GOAP.Actions)
-local _Goals = require(CompyServerScripts.GOAP.Goals)
+
+local ActionRegistry = require(CompyServerScripts.GOAP.Actions)
 local GOAPPlanner = require(CompyServerScripts.GOAP.Planner)
+
+local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local VisionSensor = require(CompyServerScripts.Agents.Sensors.VisionSensor)
-local DamageSensor = require(CompyServerScripts.Agents.Sensors.DamageSensor)
-local PathfindingModule = require(CompyServerScripts.Agents.Modules.PathfindingModule)
 local InventoryModule = require(CompyServerScripts.Agents.Modules.InventoryModule)
-local Behaviours = require(CompyServerScripts.Agents.Behaviours)
-local FindEnemyLocation = require(CompyServerScripts.GOAP.Actions.FindEnemyLocation)
-local EngageEnemy = require(CompyServerScripts.GOAP.Actions.EngageEnemy)
-local Reload = require(CompyServerScripts.GOAP.Actions.Reload)
-local FindObjective = require(CompyServerScripts.GOAP.Actions.FindObjective)
-local CaptureObjective = require(CompyServerScripts.GOAP.Actions.CaptureObjective)
-local TakeCrouchCover = require(CompyServerScripts.GOAP.Actions.TakeCrouchCover)
-local TakeProneCover = require(CompyServerScripts.GOAP.Actions.TakeProneCover)
-local StandFromCrouchCover = require(CompyServerScripts.GOAP.Actions.StandFromCrouchCover)
-local CrouchFromProneCover = require(CompyServerScripts.GOAP.Actions.CrouchFromProneCover)
+
 local _DefaultCadenceConfig = require(CompySharedScripts.Config.CadenceConfig)
-local _DefaultNoobPathConfig = require(CompySharedScripts.Config.NoobPathConfig)
 
 local Agent = {}
 Agent.__index = Agent
 
-export type BehaviourState = {
-	behaviour: number,
-	behaviourParams: {
-		targetPosition: Vector3?,
-		posture: number?,
-	}?,
-}
-
 export type PlannerState = {
-	plan: typeof(Actions),
-	goal: typeof(_Goals[1])?,
+	plan: ActionRegistry.ActionList,
+	goal: GOAPPlanner.Goal?,
 	beliefs: { [string]: boolean },
-	goapAction: typeof(Actions[1])?,
+	goapAction: ActionRegistry.Action?,
 	planIndx: number,
 	planSuccess: boolean,
 	lastFailedPlanAt: number,
@@ -56,153 +38,70 @@ type AgentData = {
 	sightedObjectiveLocs: { Vector3 },
 	sightedCrouchCoverLocs: { Vector3 },
 	sightedProneCoverLocs: { Vector3 },
-	health: number,
-	behaviourState: BehaviourState,
-	behaviourRequest: BehaviourState?,
-	posture: number,
-	movement: number,
-	equippedRifle: number,
-	rifleAmmo: number,
+
+	behaviourState: Types.BehaviourState,
+	behaviourRequest: Types.BehaviourState?,
+	requestChangeBehaviour: (Types.BehaviourState) -> (),
+	requestReplan: (string) -> (),
+
+	Actions: ActionRegistry.ActionSet,
+	agentActionData: Types.AgentActionData,
+
 	needsReplan: boolean,
-	heartBeat: RBXScriptConnection?,
-	character: Model,
-	moveSpeed: number,
 	plannerState: PlannerState,
-	sensors: {
-		visionSensor: { Sense: () -> () },
-		damageSensor: { Sense: () -> () },
-	},
+
+	controller: SPHController.SPHController,
+	visionSensor: VisionSensor.VisionSensor,
+	inventoryModule: InventoryModule.InventoryModule,
+
+	heartBeat: RBXScriptConnection?,
 	cadence: typeof(_DefaultCadenceConfig),
 	visionElapsed: number,
-	damageElapsed: number,
 	plannerElapsed: number,
+
 	ended: boolean,
-	pathfinding: PathfindingModule.PathfindingModule,
-	inventory: InventoryModule.InventoryModule,
-	modules: {
-		pathfinding: PathfindingModule.PathfindingModule,
-		inventory: InventoryModule.InventoryModule,
-	},
-	strategies: {
-		[number]: {
-			Reset: () -> (),
-			Progress: (number) -> (),
-			Finished: () -> boolean,
-		},
-	},
-	requestChangeBehaviour: (BehaviourState) -> (),
-	tryReload: () -> boolean,
+
 	startRuntime: () -> (),
 	endRuntime: () -> (),
 }
 
-local function createEmptyPlan(): typeof(Actions)
-	local plan = table.clone(Actions)
-	table.clear(plan)
-	return plan
+local function createEmptyPlan(): { Types.Action }
+	return {}
 end
 
-local function startGOAPAction(self: AgentData, actionId: string): ()
-	local data = self
-	if actionId == FindEnemyLocation.id then
-		FindEnemyLocation.Start(data)
-	elseif actionId == EngageEnemy.id then
-		EngageEnemy.Start(data)
-	elseif actionId == Reload.id then
-		Reload.Start(data)
-	elseif actionId == FindObjective.id then
-		FindObjective.Start(data)
-	elseif actionId == CaptureObjective.id then
-		CaptureObjective.Start(data)
-	elseif actionId == TakeCrouchCover.id then
-		TakeCrouchCover.Start(data)
-	elseif actionId == TakeProneCover.id then
-		TakeProneCover.Start(data)
-	elseif actionId == StandFromCrouchCover.id then
-		StandFromCrouchCover.Start(data)
-	elseif actionId == CrouchFromProneCover.id then
-		CrouchFromProneCover.Start(data)
-	else
-		Agent.RequestReplan(self, "Unknown GOAPAction")
-	end
+function Agent.RequestChangeBehaviour(self: AgentData, request: Types.BehaviourState): ()
+	self.behaviourRequest = request
 end
 
-local function updateGOAPAction(self: AgentData, actionId: string, dt: number): ()
-	local data = self
-	if actionId == FindEnemyLocation.id then
-		FindEnemyLocation.Update(data, dt)
-	elseif actionId == EngageEnemy.id then
-		EngageEnemy.Update(data, dt)
-	elseif actionId == Reload.id then
-		Reload.Update(data, dt)
-	elseif actionId == FindObjective.id then
-		FindObjective.Update(data, dt)
-	elseif actionId == CaptureObjective.id then
-		CaptureObjective.Update(data, dt)
-	elseif actionId == TakeCrouchCover.id then
-		TakeCrouchCover.Update(data, dt)
-	elseif actionId == TakeProneCover.id then
-		TakeProneCover.Update(data, dt)
-	elseif actionId == StandFromCrouchCover.id then
-		StandFromCrouchCover.Update(data, dt)
-	elseif actionId == CrouchFromProneCover.id then
-		CrouchFromProneCover.Update(data, dt)
-	end
+function Agent.RequestReplan(self: AgentData, _reason: string): ()
+	self.needsReplan = true
 end
 
-local function finishedGOAPAction(self: AgentData, actionId: string): boolean
-	local data = self
-	if actionId == FindEnemyLocation.id then
-		return FindEnemyLocation.FinishedCheck(data)
-	elseif actionId == EngageEnemy.id then
-		return EngageEnemy.FinishedCheck(data)
-	elseif actionId == Reload.id then
-		return Reload.FinishedCheck(data)
-	elseif actionId == FindObjective.id then
-		return FindObjective.FinishedCheck(data)
-	elseif actionId == CaptureObjective.id then
-		return CaptureObjective.FinishedCheck(data)
-	elseif actionId == TakeCrouchCover.id then
-		return TakeCrouchCover.FinishedCheck(data)
-	elseif actionId == TakeProneCover.id then
-		return TakeProneCover.FinishedCheck(data)
-	elseif actionId == StandFromCrouchCover.id then
-		return StandFromCrouchCover.FinishedCheck(data)
-	elseif actionId == CrouchFromProneCover.id then
-		return CrouchFromProneCover.FinishedCheck(data)
-	end
-	return false
-end
-
-local function endGOAPAction(self: AgentData, actionId: string): ()
-	local data = self
-	if actionId == FindEnemyLocation.id then
-		FindEnemyLocation.End(data)
-	elseif actionId == EngageEnemy.id then
-		EngageEnemy.End(data)
-	elseif actionId == Reload.id then
-		Reload.End(data)
-	elseif actionId == FindObjective.id then
-		FindObjective.End(data)
-	elseif actionId == CaptureObjective.id then
-		CaptureObjective.End(data)
-	elseif actionId == TakeCrouchCover.id then
-		TakeCrouchCover.End(data)
-	elseif actionId == TakeProneCover.id then
-		TakeProneCover.End(data)
-	elseif actionId == StandFromCrouchCover.id then
-		StandFromCrouchCover.End(data)
-	elseif actionId == CrouchFromProneCover.id then
-		CrouchFromProneCover.End(data)
-	end
+local function getActionData(self: AgentData): Types.AgentActionData
+	return {
+		sightedEnemyLocs = self.sightedEnemyLocs,
+		sightedObjectiveLocs = self.sightedObjectiveLocs,
+		sightedCrouchCoverLocs = self.sightedCrouchCoverLocs,
+		sightedProneCoverLocs = self.sightedProneCoverLocs,
+		behaviourState = self.behaviourState,
+		RequestChangeBehaviour = self.requestChangeBehaviour,
+		RequestReplan = self.requestReplan,
+	} :: Types.AgentActionData
 end
 
 local function constructBeliefs(self: AgentData): ()
-	local standing = self.posture == Enums.Posture.Standing
-	local crouched = self.posture == Enums.Posture.Crouching
-	local proned = self.posture == Enums.Posture.Proning
+	local stance = self.controller:GetStance()
+
+	local standing = stance == Enums.Posture.Standing
+	local crouched = stance == Enums.Posture.Crouching
+	local proned = stance == Enums.Posture.Proning
 	local enemyVisible = #self.sightedEnemyLocs > 0
-	local lowHealth = self.health <= 35
+
+	local health = self.controller:GetHumanoid().Health
+
+	local lowHealth = health <= 35
+
+	local ammo, _ = self.controller:GetAmmo()
 
 	self.plannerState.beliefs = {
 		objectiveCaptured = false,
@@ -212,7 +111,7 @@ local function constructBeliefs(self: AgentData): ()
 		inCrouchCover = crouched,
 		inProneCover = proned,
 		proneCoverInRange = #self.sightedProneCoverLocs > 0,
-		hasAmmo = self.rifleAmmo > 0,
+		hasAmmo = ammo > 0,
 		inDanger = enemyVisible and lowHealth,
 		standing = standing,
 		crouched = crouched,
@@ -225,10 +124,10 @@ end
 local function makePlan(self: AgentData): ()
 	local previousAction = self.plannerState.goapAction
 	if previousAction then
-		endGOAPAction(self, previousAction.id)
+		previousAction.End(self.controller, self.agentActionData)
 	end
 
-	local planData = GOAPPlanner.MakePlan(self.plannerState.beliefs)
+	local planData = GOAPPlanner.MakePlan(self.plannerState.beliefs, self.Actions)
 	self.plannerState.planSuccess = planData.success
 
 	if not planData.success or #planData.plan == 0 then
@@ -249,31 +148,31 @@ local function makePlan(self: AgentData): ()
 		return
 	end
 	self.plannerState.goapAction = firstAction
-	startGOAPAction(self, firstAction.id)
+	firstAction.Start(self.controller, self.agentActionData)
 end
 
 local function handleGOAPAction(self: AgentData, dt: number): ()
 	local goapAction = self.plannerState.goapAction
 	if not goapAction then
-		Agent.RequestReplan(self, "GOAPAction missing")
+		self.requestReplan("GOAPAction missing")
 		return
 	end
 
-	if finishedGOAPAction(self, goapAction.id) then
-		endGOAPAction(self, goapAction.id)
+	if goapAction.FinishedCheck(self.controller, self.agentActionData) then
+		goapAction.End(self.controller, self.agentActionData)
 		self.plannerState.planIndx += 1
 		self.plannerState.goapAction = self.plannerState.plan[self.plannerState.planIndx]
 
 		local nextAction = self.plannerState.goapAction
 		if nextAction then
-			startGOAPAction(self, nextAction.id)
+			nextAction.Start(self.controller, self.agentActionData)
 		else
-			Agent.RequestReplan(self, "Plan finished")
+			self.requestReplan("Plan finished")
 		end
 		return
 	end
 
-	updateGOAPAction(self, goapAction.id, dt)
+	goapAction.Update(self.controller, self.agentActionData, dt)
 end
 
 local function updatePlanner(self: AgentData, dt: number): ()
@@ -293,90 +192,20 @@ local function updatePlanner(self: AgentData, dt: number): ()
 	end
 end
 
-function Agent.RequestChangeBehaviour(self: AgentData, request: BehaviourState): ()
-	self.behaviourRequest = request
-end
-
-function Agent.RequestReplan(self: AgentData, _reason: string): ()
-	self.needsReplan = true
-end
-
-function Agent.TryReload(self: AgentData): boolean
-	if not self.inventory:TryTakeMagazine() then
-		return false
-	end
-
-	local rifleData = RifleData[self.equippedRifle]
-	if not rifleData then
-		self.inventory:StoreMagazine()
-		return false
-	end
-
-	self.rifleAmmo = rifleData.ammoInMagazine
-	return true
-end
-
-function Agent.HandleBehaviour(self: AgentData, dt: number): ()
-	local request = self.behaviourRequest
-	if request then
-		local previousStrategy = self.strategies[self.behaviourState.behaviour]
-		if previousStrategy then
-			previousStrategy.Reset()
-		end
-
-		self.behaviourState = request
-		self.behaviourRequest = nil :: BehaviourState?
-		return
-	end
-
-	if self.behaviourState.behaviour == Enums.Behaviour.None then
-		return
-	end
-
-	local strategy = self.strategies[self.behaviourState.behaviour]
-	if not strategy then
-		self.behaviourState = {
-			behaviour = Enums.Behaviour.None,
-			behaviourParams = nil,
-		}
-		Agent.RequestReplan(self, "Behaviour strategy missing")
-		return
-	end
-
-	if strategy.Finished() then
-		strategy.Reset()
-		self.behaviourState = {
-			behaviour = Enums.Behaviour.None,
-			behaviourParams = nil,
-		}
-		return
-	end
-
-	strategy.Progress(dt)
-end
-
 function Agent.Update(self: AgentData, dt: number): ()
-	self.damageElapsed += dt
-	if self.damageElapsed >= self.cadence.DamageInterval then
-		self.damageElapsed = 0
-		self.sensors.damageSensor.Sense()
-	end
-
 	self.visionElapsed += dt
 	if self.visionElapsed >= self.cadence.VisionInterval then
 		self.visionElapsed = 0
-		self.sensors.visionSensor.Sense()
+		self.visionSensor:Sense()
 	end
 
-	local humanoid = self.character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.Health = self.health
-	end
-
-	if self.health <= 0 then
+	local health = self.controller:GetHumanoid().Health
+	if health <= 0 then
 		Agent.End(self)
 		return
 	end
+
+	self.agentActionData = getActionData(self) -- Update once
 
 	self.plannerElapsed += dt
 	if self.plannerElapsed >= self.cadence.PlannerInterval then
@@ -384,8 +213,6 @@ function Agent.Update(self: AgentData, dt: number): ()
 		self.plannerElapsed = 0
 		updatePlanner(self, plannerDelta)
 	end
-	Agent.HandleBehaviour(self, dt)
-	self.pathfinding:Update(self.character, self.moveSpeed)
 end
 
 function Agent.Start(self: AgentData): ()
@@ -409,44 +236,25 @@ function Agent.End(self: AgentData): ()
 		heartBeat:Disconnect()
 	end
 
-	for _, strategy in pairs(self.strategies) do
-		strategy.Reset()
+	local goapAction = self.plannerState.goapAction
+	if goapAction then
+		goapAction.End(self.controller, self.agentActionData)
+		self.plannerState.goapAction = nil
 	end
-	self.pathfinding:Destroy()
 end
 
 export type Agent = typeof(setmetatable({} :: AgentData, Agent))
 
 function Agent.new(params: {
 	id: number,
-	character: Model,
-	health: number,
-	moveSpeed: number,
-	equippedRifle: number,
-	rifleAmmo: number,
 	magazines: number,
 	fovX: number,
 	fovY: number,
 	visionDistance: number,
 	failedPlanCooldown: number?,
+	controller: SPHController.SPHController,
 	cadence: typeof(_DefaultCadenceConfig),
-	noobPath: typeof(_DefaultNoobPathConfig),
-	senseWorld: (
-		number,
-		Model,
-		number,
-		number,
-		number
-	) -> {
-		enemyLocations: { Vector3 },
-		objectiveLocations: { Vector3 },
-		crouchCoverLocations: { Vector3 },
-		proneCoverLocations: { Vector3 },
-	},
-	checkDamage: (number) -> number,
-	engageEnemy: (number, Model, Vector3, number) -> boolean,
 }): Agent
-	local pathfinding = PathfindingModule.new(params.character, params.noobPath)
 	local inventory = InventoryModule.new(params.magazines)
 	local data: AgentData = {
 		id = params.id,
@@ -454,20 +262,19 @@ function Agent.new(params: {
 		sightedObjectiveLocs = {},
 		sightedCrouchCoverLocs = {},
 		sightedProneCoverLocs = {},
-		health = params.health,
+
 		behaviourState = {
 			behaviour = Enums.Behaviour.None,
 			behaviourParams = nil,
 		},
 		behaviourRequest = nil,
-		posture = Enums.Posture.Standing,
-		movement = Enums.Movement.Idle,
-		equippedRifle = params.equippedRifle,
-		rifleAmmo = params.rifleAmmo,
+		requestChangeBehaviour = function(_request: Types.BehaviourState): () end,
+		requestReplan = function(_message: string): () end,
+
+		Actions = {} :: ActionRegistry.ActionSet,
+		agentActionData = {} :: Types.AgentActionData,
+
 		needsReplan = true,
-		heartBeat = nil,
-		character = params.character,
-		moveSpeed = params.moveSpeed,
 		plannerState = {
 			plan = createEmptyPlan(),
 			goal = nil,
@@ -478,38 +285,23 @@ function Agent.new(params: {
 			lastFailedPlanAt = -math.huge,
 			failedPlanCooldown = params.failedPlanCooldown or 0.5,
 		},
-		sensors = {
-			visionSensor = {
-				Sense = function(): () end,
-			},
-			damageSensor = {
-				Sense = function(): () end,
-			},
-		},
+
+		controller = params.controller,
+		visionSensor = VisionSensor.blank(),
+		inventoryModule = inventory,
+
+		heartBeat = nil,
 		cadence = params.cadence,
 		visionElapsed = params.cadence.VisionInterval,
-		damageElapsed = params.cadence.DamageInterval,
 		plannerElapsed = params.cadence.PlannerInterval,
+
 		ended = false,
-		pathfinding = pathfinding,
-		inventory = inventory,
-		modules = {
-			pathfinding = pathfinding,
-			inventory = inventory,
-		},
-		strategies = {},
-		requestChangeBehaviour = function(_request: BehaviourState): () end,
-		tryReload = function(): boolean
-			return false
-		end,
+
 		startRuntime = function(): () end,
 		endRuntime = function(): () end,
 	}
-	data.requestChangeBehaviour = function(request: BehaviourState): ()
+	data.requestChangeBehaviour = function(request: Types.BehaviourState): ()
 		Agent.RequestChangeBehaviour(data, request)
-	end
-	data.tryReload = function(): boolean
-		return Agent.TryReload(data)
 	end
 	data.startRuntime = function(): ()
 		Agent.Start(data)
@@ -517,69 +309,10 @@ function Agent.new(params: {
 	data.endRuntime = function(): ()
 		Agent.End(data)
 	end
+	data.Actions = ActionRegistry.new()
 
-	local visionSensor = VisionSensor.new(
-		data,
-		data.id,
-		data.character,
-		params.fovX,
-		params.fovY,
-		params.visionDistance,
-		params.senseWorld
-	)
-	local damageSensor = DamageSensor.new(data, data.id, params.checkDamage)
-	data.sensors.visionSensor = {
-		Sense = function(): ()
-			visionSensor:Sense()
-		end,
-	}
-	data.sensors.damageSensor = {
-		Sense = function(): ()
-			damageSensor:Sense()
-		end,
-	}
-
-	local engagingBehaviour = Behaviours.EngagingBehaviour.new(data, params.engageEnemy)
-	local takeCoverBehaviour = Behaviours.TakeCoverBehaviour.new(data, function(target: Vector3?): ()
-		data.pathfinding:SetTarget(target)
-	end)
-	local captureObjectiveBehaviour = Behaviours.CaptureObjectiveBehaviour.new(data, function(target: Vector3?): ()
-		data.pathfinding:SetTarget(target)
-	end)
-
-	data.strategies[Enums.Behaviour.EngagingEnemy] = {
-		Reset = function(): ()
-			engagingBehaviour:Reset()
-		end,
-		Progress = function(dt: number): ()
-			engagingBehaviour:Progress(dt)
-		end,
-		Finished = function(): boolean
-			return engagingBehaviour:Finished()
-		end,
-	}
-	data.strategies[Enums.Behaviour.InCover] = {
-		Reset = function(): ()
-			takeCoverBehaviour:Reset()
-		end,
-		Progress = function(dt: number): ()
-			takeCoverBehaviour:Progress(dt)
-		end,
-		Finished = function(): boolean
-			return takeCoverBehaviour:Finished()
-		end,
-	}
-	data.strategies[Enums.Behaviour.CapturingObjective] = {
-		Reset = function(): ()
-			captureObjectiveBehaviour:Reset()
-		end,
-		Progress = function(dt: number): ()
-			captureObjectiveBehaviour:Progress(dt)
-		end,
-		Finished = function(): boolean
-			return captureObjectiveBehaviour:Finished()
-		end,
-	}
+	data.visionSensor =
+		VisionSensor.new(data, data.id, data.controller:GetModel(), params.fovX, params.fovY, params.visionDistance)
 
 	return setmetatable(data, Agent)
 end

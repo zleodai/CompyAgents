@@ -2,60 +2,39 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
+local Types = require(CompyServerScripts.Core.Types)
 
-local Enums = require(CompyServerScripts.Core.Enums)
+local function Start(controller: SPHController.SPHController, data: Types.AgentActionData): () end
 
-local Action = {
-	id = "EngageEnemy",
-	cost = 1,
-	preconditions = {
-		hasEnemyPos = true,
-		inCrouchCover = false,
-		inProneCover = false,
-		hasAmmo = true,
-	},
-	effects = {
-		enemyEngaged = true,
-	},
-}
+local function Update(controller: SPHController.SPHController, data: Types.AgentActionData, _dt: number): () end
 
-function Action.Start(agent: {
-	requestChangeBehaviour: ({
-		behaviour: number,
-		behaviourParams: { targetPosition: Vector3?, posture: number? }?,
-	}) -> (),
-}): ()
-	agent.requestChangeBehaviour({
-		behaviour = Enums.Behaviour.EngagingEnemy,
-		behaviourParams = nil,
-	})
+local function FinishedCheck(controller: SPHController.SPHController, data: Types.AgentActionData): boolean
+	return false
 end
 
-function Action.Update<Agent>(_agent: Agent, _dt: number): () end
+local function End(controller: SPHController.SPHController, data: Types.AgentActionData): () end
 
-function Action.FinishedCheck(agent: {
-	behaviourState: {
-		behaviour: number,
-		behaviourParams: { targetPosition: Vector3?, posture: number? }?,
-	},
-	behaviourRequest: {
-		behaviour: number,
-		behaviourParams: { targetPosition: Vector3?, posture: number? }?,
-	}?,
-}): boolean
-	return agent.behaviourRequest == nil and agent.behaviourState.behaviour == Enums.Behaviour.None
-end
+local Action = {}
 
-function Action.End(agent: {
-	requestChangeBehaviour: ({
-		behaviour: number,
-		behaviourParams: { targetPosition: Vector3?, posture: number? }?,
-	}) -> (),
-}): ()
-	agent.requestChangeBehaviour({
-		behaviour = Enums.Behaviour.None,
-		behaviourParams = nil,
-	})
+function Action.new(): Types.Action
+	return {
+		id = "EngageEnemy",
+		cost = 1,
+		preconditions = {
+			hasEnemyPos = true,
+			inCrouchCover = false,
+			inProneCover = false,
+			hasAmmo = true,
+		},
+		effects = {
+			enemyEngaged = true,
+		},
+		Start = Start,
+		Update = Update,
+		FinishedCheck = FinishedCheck,
+		End = End,
+	}
 end
 
 return Action

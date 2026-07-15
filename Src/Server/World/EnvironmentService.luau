@@ -219,11 +219,7 @@ function EnvironmentService.GetSpawnCFrame(self: EnvironmentService, teamId: str
 	return CFrame.lookAt(position, position + teamConfig.Forward)
 end
 
-function EnvironmentService.GetCoverPositions(
-	self: EnvironmentService,
-	teamId: string,
-	posture: string
-): { Vector3 }
+function EnvironmentService.GetCoverPositions(self: EnvironmentService, teamId: string, posture: string): { Vector3 }
 	local positions: { Vector3 } = {}
 	for _, coverPoint in ipairs(self.coverPoints) do
 		if matchesTeam(coverPoint.teamId, teamId) and coverPoint.posture == posture then
@@ -243,10 +239,7 @@ function EnvironmentService.GetObjectivePositions(self: EnvironmentService, team
 	return positions
 end
 
-function EnvironmentService.GetHumanoidModels(
-	self: EnvironmentService,
-	teamId: string?
-): { HumanoidModelRecord }
+function EnvironmentService.GetHumanoidModels(self: EnvironmentService, teamId: string?): { HumanoidModelRecord }
 	local models: { HumanoidModelRecord } = {}
 	for _, record in ipairs(self.humanoidModels) do
 		if matchesTeam(record.teamId, teamId) then

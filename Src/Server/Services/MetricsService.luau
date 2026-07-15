@@ -49,7 +49,7 @@ function MetricsService.Sample(self: MetricsService): ()
 	local alive = 0
 	local records = self.agentService:GetAllRecords()
 	for _, record in ipairs(records) do
-		if record.agent.health > 0 then
+		if not record.agent.ended then
 			alive += 1
 		end
 	end

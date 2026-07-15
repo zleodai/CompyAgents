@@ -1,4 +1,4 @@
---!strict
+-- !strict
 
 local SimulationConfig = {
 	DemoAgentsPerTeam = 1,

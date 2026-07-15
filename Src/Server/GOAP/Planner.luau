@@ -3,15 +3,20 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 
-local Actions = require(CompyServerScripts.GOAP.Actions)
+local ActionRegistry = require(CompyServerScripts.GOAP.Actions)
 local Goals = require(CompyServerScripts.GOAP.Goals)
 
 local Planner = {}
 
-local function createEmptyPlan(): typeof(Actions)
-	local plan = table.clone(Actions)
-	table.clear(plan)
-	return plan
+export type Goal = {
+	id: string,
+	priority: number,
+	activation: { [string]: boolean },
+	desired: { [string]: boolean },
+}
+
+local function createEmptyPlan(): ActionRegistry.ActionList
+	return {}
 end
 
 local function factsSatisfied(facts: { [string]: boolean }, desiredFacts: { [string]: boolean }): boolean
@@ -48,11 +53,11 @@ end
 function Planner.Plan(
 	startFacts: { [string]: boolean },
 	goalFacts: { [string]: boolean },
-	actions: typeof(Actions),
+	actions: ActionRegistry.ActionList,
 	options: { MaxExpansions: number?, MaxPlanDepth: number? }?
 ): {
 	success: boolean,
-	actions: typeof(Actions),
+	actions: ActionRegistry.ActionList,
 	cost: number?,
 	expansions: number,
 	reason: string?,
@@ -62,7 +67,7 @@ function Planner.Plan(
 	local frontier: {
 		{
 			facts: { [string]: boolean },
-			plan: typeof(Actions),
+			plan: ActionRegistry.ActionList,
 			cost: number,
 		}
 	} = {
@@ -128,23 +133,30 @@ function Planner.Plan(
 	}
 end
 
-function Planner.MakePlan(beliefs: { [string]: boolean }): {
+function Planner.MakePlan(beliefs: { [string]: boolean }, actionSet: ActionRegistry.ActionSet): {
 	success: boolean,
-	plan: typeof(Actions),
-	goal: typeof(Goals[1])?,
+	plan: ActionRegistry.ActionList,
+	goal: Goal?,
 	cost: number?,
 	expansions: number,
 	reason: string?,
 }
-	local candidateGoals = table.clone(Goals)
+	local candidateGoals: { Goal } = {}
+	for _, goal in pairs(Goals) do
+		table.insert(candidateGoals, goal)
+	end
 	table.sort(candidateGoals, function(a, b): boolean
+		if a.priority == b.priority then
+			return a.id < b.id
+		end
 		return a.priority > b.priority
 	end)
+	local candidateActions = ActionRegistry.ToArray(actionSet)
 
 	local totalExpansions = 0
 	for _, goal in ipairs(candidateGoals) do
 		if factsSatisfied(beliefs, goal.activation) then
-			local result = Planner.Plan(beliefs, goal.desired, Actions, nil)
+			local result = Planner.Plan(beliefs, goal.desired, candidateActions, nil)
 			totalExpansions += result.expansions
 			if result.success then
 				return {

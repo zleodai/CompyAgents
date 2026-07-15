@@ -1,24 +1,37 @@
 --!strict
 
-local Action = {
-	id = "FindEnemyLocation",
-	cost = 1,
-	preconditions = {
-		hasEnemyPos = false,
-	},
-	effects = {
-		hasEnemyPos = true,
-	},
-}
+local ServerScriptService = game:GetService("ServerScriptService")
+local CompyServerScripts = ServerScriptService.CompyAgent
+local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
+local Types = require(CompyServerScripts.Core.Types)
 
-function Action.Start<Agent>(_agent: Agent): () end
+local function Start(controller: SPHController.SPHController, data: Types.AgentActionData): () end
 
-function Action.Update<Agent>(_agent: Agent, _dt: number): () end
+local function Update(controller: SPHController.SPHController, data: Types.AgentActionData, _dt: number): () end
 
-function Action.FinishedCheck<Agent>(agent: Agent & { sightedEnemyLocs: { Vector3 } }): boolean
-	return #agent.sightedEnemyLocs > 0
+local function FinishedCheck(controller: SPHController.SPHController, data: Types.AgentActionData): boolean
+	return false
 end
 
-function Action.End<Agent>(_agent: Agent): () end
+local function End(controller: SPHController.SPHController, data: Types.AgentActionData): () end
+
+local Action = {}
+
+function Action.new(): Types.Action
+	return {
+		id = "FindEnemyLocation",
+		cost = 1,
+		preconditions = {
+			hasEnemyPos = false,
+		},
+		effects = {
+			hasEnemyPos = true,
+		},
+		Start = Start,
+		Update = Update,
+		FinishedCheck = FinishedCheck,
+		End = End,
+	}
+end
 
 return Action

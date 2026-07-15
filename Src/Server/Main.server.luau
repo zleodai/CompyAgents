@@ -1,19 +1,19 @@
---!strict
+-- !strict
 
--- local ReplicatedStorage = game:GetService("ReplicatedStorage")
--- local ServerScriptService = game:GetService("ServerScriptService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
--- local CompyServerScripts = ServerScriptService.CompyAgent
--- local CompySharedScripts = ReplicatedStorage.CompyAgent
+local CompyServerScripts = ServerScriptService.CompyAgent
+local CompySharedScripts = ReplicatedStorage.CompyAgent
 
--- local Config = require(CompySharedScripts.Config)
--- local Simulation = require(CompyServerScripts.Core.Simulation)
+local Config = require(CompySharedScripts.Config)
+local Simulation = require(CompyServerScripts.Core.Simulation)
 
--- local simulation = Simulation.new(Config)
--- simulation:Start()
+local simulation = Simulation.new(Config)
+simulation:Start()
 
--- game:BindToClose(function(): ()
--- simulation:Stop()
--- end)
+game:BindToClose(function(): ()
+	simulation:Stop()
+end)
 
--- print("[CompyAgent] Server simulation started")
+print("[CompyAgent] Server simulation started")

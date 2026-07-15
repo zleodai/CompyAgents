@@ -1,26 +1,37 @@
 --!strict
 
-local Action = {
-	id = "Reload",
-	cost = 1,
-	preconditions = {
-		hasAmmo = false,
-	},
-	effects = {
-		hasAmmo = true,
-	},
-}
+local ServerScriptService = game:GetService("ServerScriptService")
+local CompyServerScripts = ServerScriptService.CompyAgent
+local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
+local Types = require(CompyServerScripts.Core.Types)
 
-function Action.Start(agent: { tryReload: () -> boolean }): ()
-	agent.tryReload()
+local function Start(controller: SPHController.SPHController, data: Types.AgentActionData): () end
+
+local function Update(controller: SPHController.SPHController, data: Types.AgentActionData, _dt: number): () end
+
+local function FinishedCheck(controller: SPHController.SPHController, data: Types.AgentActionData): boolean
+	return false
 end
 
-function Action.Update<Agent>(_agent: Agent, _dt: number): () end
+local function End(controller: SPHController.SPHController, data: Types.AgentActionData): () end
 
-function Action.FinishedCheck<Agent>(agent: Agent & { rifleAmmo: number }): boolean
-	return agent.rifleAmmo > 0
+local Action = {}
+
+function Action.new(): Types.Action
+	return {
+		id = "Reload",
+		cost = 1,
+		preconditions = {
+			hasAmmo = false,
+		},
+		effects = {
+			hasAmmo = true,
+		},
+		Start = Start,
+		Update = Update,
+		FinishedCheck = FinishedCheck,
+		End = End,
+	}
 end
-
-function Action.End<Agent>(_agent: Agent): () end
 
 return Action

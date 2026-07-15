@@ -1,12 +1,27 @@
 --!strict
 
 local ServerScriptService = game:GetService("ServerScriptService")
-local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local CompyServerScripts = ServerScriptService.CompyAgent
-local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
+local CompySharedScripts = ReplicatedStorage.CompyAgent
+local SPHController = require(script.Parent.SPHController)
+local SPHAgentFactory = require(CompyServerScripts.Integrations.Spearhead.SPHAgentFactory)
+local Promise = require(CompySharedScripts.Promise)
+
+local function awaitAction(actionName: string, promise: Promise.Promise<boolean>): boolean
+	local resolved, succeeded = promise:await()
+	if not resolved then
+		warn(`[SPHDamageTest] {actionName} Promise rejected: {succeeded}`)
+		return false
+	end
+	if not succeeded then
+		warn(`[SPHDamageTest] {actionName} resolved false`)
+	end
+	return succeeded
+end
 
 local function findWaypoint(name: string): BasePart?
 	local folder = Workspace:FindFirstChild("Demo").Waypoints
@@ -33,128 +48,193 @@ local function configureWaypointCollider(waypoint: BasePart): ()
 	waypoint:SetAttribute("SPHArrivalCollider", true)
 end
 
+local function setupDeathDisconnect(contr: SPHController.SPHController)
+	local humanoid = contr:GetHumanoid()
+
+	local connection = RunService.Heartbeat:Connect(function()
+		if humanoid.Health <= 0 then
+			contr:Destroy()
+		end
+	end)
+
+	game:BindToClose(function()
+		connection:Disconnect()
+	end)
+end
+
+local function setupPatrol(contr: SPHController.SPHController, a: BasePart, b: BasePart): ()
+	local humanoid = contr:GetHumanoid()
+	task.defer(function()
+		local destination: BasePart = b
+		while humanoid.Health > 0 do
+			local reached = contr:MoveTo(destination, "Walk")
+			if not reached then
+				return
+			end
+
+			destination = if destination == a then b else a
+		end
+	end)
+end
+
+local function setupKillWatch(
+	prefix: string,
+	targetContrs: { SPHController.SPHController },
+	a: BasePart,
+	b: BasePart,
+	agentFactory: SPHAgentFactory.SPHAgentFactory
+): ()
+	local guardController = agentFactory:Create(
+		`guard{prefix}`,
+		CFrame.new(a.Position + Vector3.new(0, 3, 0), b.Position),
+		{ speedMult = 0.9 }
+	)
+	setupDeathDisconnect(guardController)
+
+	task.defer(function()
+		local guardHumanoid = guardController:GetHumanoid()
+		local guardDummy = guardHumanoid.Parent or Instance.new("Part")
+		local guardHead = guardController:GetHeadPart()
+
+		local targetDummies = {}
+		for indx, xContr in ipairs(targetContrs) do
+			local humanoid = xContr:GetHumanoid()
+			local targetDummy = humanoid.Parent
+			targetDummies[indx] = targetDummy
+		end
+
+		while #targetContrs > 0 do
+			local contrIndxToRemove = {}
+
+			for indx, xContr in ipairs(targetContrs) do
+				local humanoid = xContr:GetHumanoid()
+				if humanoid.Health <= 0 then
+					contrIndxToRemove[#contrIndxToRemove + 1] = indx
+				end
+			end
+
+			for _, indx in ipairs(contrIndxToRemove) do
+				table.remove(targetContrs, indx)
+			end
+
+			if #targetContrs == 0 then
+				break
+			end
+
+			local targetContr: SPHController.SPHController
+			local targetDist = math.huge
+
+			for _, xContr in ipairs(targetContrs) do
+				local head = xContr:GetHeadPart()
+				local distance = (guardHead.Position - head.Position).Magnitude
+				if distance < targetDist then
+					targetDist = distance
+					targetContr = xContr
+				end
+			end
+
+			local targetHead = targetContr:GetHeadPart()
+
+			guardController:Equip()
+			if not awaitAction("Equip", guardController:Equip()) then
+				return
+			end
+
+			local aimCastParams = RaycastParams.new()
+			aimCastParams.FilterDescendantsInstances = { guardDummy }
+			aimCastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+			local aimCast =
+				Workspace:Raycast(guardHead.Position, targetHead.Position - guardHead.Position, aimCastParams)
+			local hitCharacter = if aimCast then aimCast.Instance:FindFirstAncestorOfClass("Model") else nil
+			if not table.find(targetDummies, hitCharacter) then
+				task.wait(0.1)
+				continue
+			end
+
+			local ammo, _ = guardController:GetAmmo()
+			if ammo == 0 then
+				guardController:Reload():await()
+				continue
+			end
+
+			if not guardController:CanFire() then
+				task.wait(0.1)
+				continue
+			end
+
+			guardController
+				:Aim(targetHead.Position)
+				:andThen(function(aimed: boolean): any
+					if not aimed then
+						return false
+					end
+
+					return guardController:Fire()
+				end)
+				:catch(function(reason): ()
+					warn("Aim/fire failed:", reason)
+				end)
+			task.wait(0.1)
+		end
+
+		guardController
+			:ClearAim()
+			:andThen(function(clearedAim: boolean): any
+				if not clearedAim then
+					return false
+				end
+
+				return guardController:Unequip()
+			end)
+			:andThen(function(unequipped: boolean): ()
+				if not unequipped then
+					return false
+				end
+
+				guardController:MoveTo(b, "CrouchWalk")
+			end)
+			:catch(function(reason): ()
+				warn("ClearAim/Unequip/Moveto failed:", reason)
+			end)
+	end)
+end
+
+local function setupPatrolBots(
+	prefix: string,
+	amount: number,
+	a: BasePart,
+	b: BasePart,
+	factory: SPHAgentFactory.SPHAgentFactory
+): { SPHController.SPHController }
+	local bots = {}
+
+	for i = 1, amount do
+		local contr =
+			factory:Create(`PatrolAgent{prefix}{i}`, CFrame.new(a.Position + Vector3.new(0, 3, 0), b.Position))
+
+		setupDeathDisconnect(contr)
+		setupPatrol(contr, a, b)
+
+		bots[i] = contr
+	end
+
+	return bots
+end
+
 configureWaypointCollider(waypointA)
 configureWaypointCollider(waypointB)
 configureWaypointCollider(waypointC)
 configureWaypointCollider(waypointD)
 
-local function getOrCreateDummy(name: string, spawnCFrame: CFrame): (Model, Humanoid)
-	local existing = Workspace:FindFirstChild(name)
-	local character: Model
-	if existing and existing:IsA("Model") then
-		character = existing
-	else
-		local description = Instance.new("HumanoidDescription")
-		character = Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R6)
-		description:Destroy()
-		character.Name = name
-		character.Parent = Workspace
-	end
-
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	assert(rootPart and rootPart:IsA("BasePart"), `{character:GetFullName()} is missing HumanoidRootPart`)
-	character.PrimaryPart = rootPart
-	character:PivotTo(spawnCFrame)
-
-	for _, descendant in ipairs(character:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.Anchored = false
-			local canSetOwner = descendant:CanSetNetworkOwnership()
-			if canSetOwner then
-				descendant:SetNetworkOwner(nil)
-			end
-		end
-	end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	assert(humanoid, `{character:GetFullName()} is missing a Humanoid`)
-	humanoid.MaxHealth = 100
-	humanoid.Health = humanoid.MaxHealth
-	humanoid.DisplayName = name
-	return character, humanoid
-end
-
-local dummyA, humanoidA =
-	getOrCreateDummy("dummyA", CFrame.new(waypointA.Position + Vector3.new(0, 3, 0), waypointB.Position))
-local dummyB, humanoidB =
-	getOrCreateDummy("dummyB", CFrame.new(waypointC.Position + Vector3.new(0, 3, 0), waypointA.Position))
-
-local controllerA = SPHController.new(dummyA, {
-	weaponName = "AKM",
-	moveTimeout = 30,
-})
-local controllerB = SPHController.new(dummyB, {
-	weaponName = "AKM",
-	moveTimeout = 30,
+local agentFactory = SPHAgentFactory.new({
+	maxHealth = 80,
+	controllerConfig = {
+		weaponName = "AKM",
+		moveTimeout = 30,
+	},
 })
 
-local headB = dummyB:FindFirstChild("Head") or dummyA:FindFirstChild("HumanoidRootPart")
-if not headB or not headB:IsA("BasePart") then
-	return
-end
-local headA = dummyA:FindFirstChild("Head") or dummyA:FindFirstChild("HumanoidRootPart")
-if not headA or not headA:IsA("BasePart") then
-	return
-end
+local patrolBots = setupPatrolBots("A", 5, waypointA, waypointB, agentFactory)
 
-task.defer(function()
-	local aDestination: BasePart = waypointB
-	while humanoidA.Health > 0 do
-		local reached = controllerA:MoveTo(aDestination, "Sprint")
-		if not reached then
-			return
-		end
-
-		aDestination = if aDestination == waypointA then waypointB else waypointA
-	end
-end)
-
-task.defer(function()
-	if not controllerB:Equip() then
-		return
-	end
-
-	local aimCastParams = RaycastParams.new()
-	aimCastParams.FilterDescendantsInstances = { dummyB }
-	aimCastParams.FilterType = Enum.RaycastFilterType.Exclude
-
-	while humanoidA.Health > 0 do
-		local aimCast = Workspace:Raycast(headB.Position, headA.Position - headB.Position, aimCastParams)
-		if not aimCast or aimCast.Instance ~= headA then
-			task.wait(0.1)
-			continue
-		end
-
-		controllerB:Aim(headA.Position)
-
-		local ammo, _ = controllerB:GetAmmo()
-		if ammo == 0 then
-			controllerB:Reload()
-			task.wait(0.1)
-			continue
-		end
-
-		if controllerB:CanFire() then
-			controllerB:Fire()
-		end
-
-		task.wait(0.1)
-	end
-
-	controllerB:Unequip()
-	controllerB:MoveTo(waypointD, "CrouchWalk")
-end)
-
-local heartBeat = RunService.Heartbeat:Connect(function()
-	if humanoidA.Health <= 0 then
-		controllerA:Destroy()
-	end
-
-	if humanoidB.Health <= 0 then
-		controllerB:Destroy()
-	end
-end)
-
-game:BindToClose(function(): ()
-	heartBeat:Disconnect()
-end)
+setupKillWatch("A", patrolBots, waypointC, waypointD, agentFactory)

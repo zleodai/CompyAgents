@@ -3,10 +3,15 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
-local NoobPath = require(ReplicatedStorage.Packages.NoobPath)
+local CompyServerScripts = ServerScriptService.CompyAgent
+local Enums = require(CompyServerScripts.Core.Enums)
+
 local CompySharedScripts = ReplicatedStorage.CompyAgent
+local NoobPath = require(ReplicatedStorage.Packages.NoobPath)
+local Promise = require(CompySharedScripts.Promise)
 local DefaultNoobPathConfig = require(CompySharedScripts.Config.NoobPathConfig)
 
 local SPHController = {}
@@ -14,9 +19,6 @@ SPHController.__index = SPHController
 
 -- NPC-facing boundary for Spearhead assets. This controller intentionally does not
 -- invoke Spearhead's Player remotes or install SPH_Character client scripts.
-
-export type Stance = "Standing" | "Crouching" | "Proning"
-export type Gait = "Walk" | "Sprint" | "CrouchWalk" | "ProneWalk"
 
 export type AnimationNames = {
 	equip: string?,
@@ -44,12 +46,20 @@ export type Config = {
 	reloadDuration: number?,
 	range: number?,
 	damage: number?,
+	aimTime: number?,
+	aimSpeed: number?,
+	equipSpeedModifier: number?,
 	walkSpeed: number?,
 	sprintSpeed: number?,
 	crouchSpeed: number?,
 	proneSpeed: number?,
+	speedMult: number?,
 	reachDistance: number?,
 	moveTimeout: number?,
+	repathEnabled: boolean?,
+	repathVelocityThreshold: number?,
+	repathStuckDuration: number?,
+	repathCooldown: number?,
 	walkAnimationId: string?,
 	crouchHipOffset: number?,
 	proneHipOffset: number?,
@@ -61,8 +71,10 @@ type NumericTable = { [string]: unknown }
 type ControllerData = {
 	character: Model,
 	humanoid: Humanoid,
+	model: Model,
 	animator: Animator,
 	rootPart: BasePart,
+	head: BasePart,
 	torso: BasePart,
 	neckJoint: Motor6D?,
 	defaultNeckC1: CFrame?,
@@ -71,6 +83,7 @@ type ControllerData = {
 	weaponName: string,
 	weapon: Tool?,
 	weaponModel: Model?,
+	weaponPartTransparencies: { [BasePart]: number },
 	weaponGripMotor: Motor6D?,
 	weaponAnimBase: BasePart,
 	weaponBaseMotor: Motor6D,
@@ -95,12 +108,23 @@ type ControllerData = {
 	reloadDuration: number,
 	range: number,
 	damage: number,
+	aimTime: number,
+	aimSpeed: number,
+	equipSpeedModifier: number,
 	walkSpeed: number,
 	sprintSpeed: number,
 	crouchSpeed: number,
 	proneSpeed: number,
+	speedMult: number,
 	reachDistance: number,
 	moveTimeout: number,
+	repathEnabled: boolean,
+	repathVelocityThreshold: number,
+	repathStuckDuration: number,
+	repathCooldown: number,
+	pendingPathFailure: string?,
+	terminalPathFailure: string?,
+	pathRepathCount: number,
 	defaultHipHeight: number,
 	crouchHipOffset: number,
 	proneHipOffset: number,
@@ -110,9 +134,10 @@ type ControllerData = {
 	activeStanceTrack: AnimationTrack?,
 	activeMovementTrack: AnimationTrack?,
 	activeWeaponTrack: AnimationTrack?,
+	weaponIdleTrack: AnimationTrack?,
 	aimTarget: Vector3?,
-	stance: Stance,
-	gait: Gait?,
+	stance: Enums.Posture,
+	gait: Enums.Movement?,
 	nextShotAt: number,
 	reloading: boolean,
 	equipped: boolean,
@@ -145,6 +170,7 @@ local RIFLE_DEFAULT_ANIMATIONS: AnimationNames = {
 }
 
 local DEFAULT_R6_WALK_ANIMATION = "rbxassetid://180426354"
+local POSE_BLEND_TIME = 0.15
 
 local function mergeAnimationNames(overrides: AnimationNames?): AnimationNames
 	local merged = table.clone(RIFLE_DEFAULT_ANIMATIONS)
@@ -220,14 +246,8 @@ local function getStringList(stats: NumericTable?, names: { string }): { string 
 	return {}
 end
 
-local function getMagazineCapacity(toolTemplate: Tool, stats: NumericTable?): number
-	local magazineAmmo = toolTemplate:FindFirstChild("MagAmmo", true)
-	if magazineAmmo and magazineAmmo:IsA("IntConstrainedValue") then
-		return magazineAmmo.MaxValue
-	elseif magazineAmmo and magazineAmmo:IsA("IntValue") then
-		return magazineAmmo.Value
-	end
-	return getNumber(stats, { "magSize", "magazineSize", "ammo" }, 100)
+local function getMagazineCapacity(stats: NumericTable?): number
+	return getNumber(stats, { "magazineCapacity" }, 30)
 end
 
 local function findWeaponStats(toolTemplate: Tool): NumericTable?
@@ -490,9 +510,9 @@ local function findHumanoidFromHit(instance: Instance): Humanoid?
 	return nil
 end
 
-local function stopTrack(track: AnimationTrack?): ()
+local function stopTrack(track: AnimationTrack?, fadeTime: number?): ()
 	if track and track.IsPlaying then
-		track:Stop(0.15)
+		track:Stop(fadeTime or POSE_BLEND_TIME)
 	end
 end
 
@@ -536,12 +556,162 @@ local function waitForDuration(duration: number, isCancelled: () -> boolean): bo
 	return true
 end
 
-local function waitForTrackLength(track: AnimationTrack, timeout: number): number
+local function runAsyncAction(operation: () -> (boolean, number), shouldAbort: () -> boolean): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		if onCancel(function(): ()
+			cancelled = true
+		end) then
+			return
+		end
+
+		local succeeded, duration = operation()
+		if not succeeded then
+			resolve(false)
+			return
+		end
+
+		local completed = waitForDuration(duration, function(): boolean
+			return cancelled or shouldAbort()
+		end)
+		if not cancelled then
+			resolve(completed)
+		end
+	end)
+end
+
+local function waitForTrackCompletion(
+	track: AnimationTrack,
+	fallbackDuration: number,
+	isCancelled: () -> boolean
+): boolean
+	local ended = false
+	local endedConnection = track.Ended:Connect(function(): ()
+		ended = true
+	end)
 	local startedAt = os.clock()
-	while track.Length <= 0 and os.clock() - startedAt < timeout do
+	while track.Length <= 0 and not ended and track.IsPlaying and os.clock() - startedAt < 1 do
+		if isCancelled() then
+			endedConnection:Disconnect()
+			return false
+		end
 		task.wait()
 	end
-	return track.Length
+
+	local timeout = math.max(track.Length, fallbackDuration, 0.05) + 1
+	while (track.IsPlaying or track.WeightCurrent > 0.01) and os.clock() - startedAt < timeout do
+		if isCancelled() then
+			endedConnection:Disconnect()
+			return false
+		end
+		task.wait()
+	end
+
+	if (track.IsPlaying or track.WeightCurrent > 0.01) and not isCancelled() then
+		-- A few server-owned AnimationTracks can keep IsPlaying true even after
+		-- their visible keyframes have ended. Force the bounded fallback to a
+		-- clean fade-out so the action can restore its stable idle/aim loop.
+		track:Stop(POSE_BLEND_TIME)
+		local fadeStartedAt = os.clock()
+		while track.WeightCurrent > 0.01 and os.clock() - fadeStartedAt < POSE_BLEND_TIME + 1 do
+			if isCancelled() then
+				endedConnection:Disconnect()
+				return false
+			end
+			RunService.Heartbeat:Wait()
+		end
+	end
+	endedConnection:Disconnect()
+	return not isCancelled()
+end
+
+local function waitForTrackWeight(
+	track: AnimationTrack,
+	targetWeight: number,
+	transitionTime: number,
+	isCancelled: () -> boolean
+): boolean
+	local startedAt = os.clock()
+	local timeout = math.max(transitionTime, 0.05) + 1
+	while os.clock() - startedAt < timeout do
+		if isCancelled() then
+			return false
+		end
+		if targetWeight > 0 then
+			if track.IsPlaying and track.WeightCurrent >= targetWeight - 0.01 then
+				return true
+			end
+		elseif track.WeightCurrent <= 0.01 then
+			return true
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return false
+end
+
+local function lerpRootFacing(
+	self: SPHController,
+	targetPosition: Vector3,
+	transitionTime: number,
+	isCancelled: () -> boolean
+): boolean
+	local startLook = self.rootPart.CFrame.LookVector
+	local flatStartLook = Vector3.new(startLook.X, 0, startLook.Z)
+	local startRotation = if flatStartLook.Magnitude > 0.001
+		then CFrame.lookAt(Vector3.zero, flatStartLook).Rotation
+		else self.rootPart.CFrame.Rotation
+	local initialRootPosition = self.rootPart.Position
+	local initialFlatDirection =
+		Vector3.new(targetPosition.X - initialRootPosition.X, 0, targetPosition.Z - initialRootPosition.Z)
+	if initialFlatDirection.Magnitude <= 0.001 then
+		return true
+	end
+	if flatStartLook.Magnitude > 0.001 and flatStartLook.Unit:Dot(initialFlatDirection.Unit) >= 0.9999 then
+		self.rootPart.CFrame = CFrame.new(initialRootPosition)
+			* CFrame.lookAt(Vector3.zero, initialFlatDirection).Rotation
+		return true
+	end
+	local startedAt = os.clock()
+
+	while true do
+		if isCancelled() then
+			return false
+		end
+
+		local alpha = if transitionTime <= 0 then 1 else math.clamp((os.clock() - startedAt) / transitionTime, 0, 1)
+		local rootPosition = self.rootPart.Position
+		local flatDirection = Vector3.new(targetPosition.X - rootPosition.X, 0, targetPosition.Z - rootPosition.Z)
+		if flatDirection.Magnitude > 0.001 then
+			local targetRotation = CFrame.lookAt(Vector3.zero, flatDirection).Rotation
+			self.rootPart.CFrame = CFrame.new(rootPosition) * startRotation:Lerp(targetRotation, alpha)
+		end
+
+		if alpha >= 1 then
+			return true
+		end
+		RunService.Heartbeat:Wait()
+	end
+end
+
+local function waitForWeaponPose(self: SPHController, track: AnimationTrack, isCancelled: () -> boolean): boolean
+	-- CharacterClient hides its viewmodel until the equip track has loaded and a
+	-- keyed Motor6D transform has actually reached the rig. This prevents the
+	-- unanimated weapon root from appearing at the character's head while Roblox
+	-- is still loading the first animation frame.
+	for _ = 1, 20 do
+		if isCancelled() then
+			return false
+		end
+		if track.Length > 0 and track.WeightCurrent > 0.01 then
+			for _, descendant in self.weaponRig:GetDescendants() do
+				if descendant:IsA("Motor6D") and descendant.Transform ~= CFrame.new() then
+					return true
+				end
+			end
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return not isCancelled()
 end
 
 function SPHController._setStateAttributes(self: SPHController): ()
@@ -551,6 +721,7 @@ function SPHController._setStateAttributes(self: SPHController): ()
 	self.character:SetAttribute("SPHReloading", self.reloading)
 	self.character:SetAttribute("SPHStance", self.stance)
 	self.character:SetAttribute("SPHGait", self.gait)
+	self.character:SetAttribute("SPHSpeedMult", self.speedMult)
 end
 
 function SPHController._setWeaponRigVisible(self: SPHController, visible: boolean): ()
@@ -564,6 +735,13 @@ function SPHController._setWeaponRigVisible(self: SPHController, visible: boolea
 	end
 	self.rightArm.Transparency = if visible then 1 else self.rightArmTransparency
 	self.leftArm.Transparency = if visible then 1 else self.leftArmTransparency
+	for part, authoredTransparency in self.weaponPartTransparencies do
+		if part.Parent then
+			part.Transparency = if visible then authoredTransparency else 1
+		else
+			self.weaponPartTransparencies[part] = nil
+		end
+	end
 end
 
 function SPHController._destroyHolster(self: SPHController): ()
@@ -605,6 +783,7 @@ function SPHController._clearEquippedWeaponModel(self: SPHController): ()
 		self.weaponModel:Destroy()
 		self.weaponModel = nil
 	end
+	table.clear(self.weaponPartTransparencies)
 end
 
 function SPHController._createInventoryTool(self: SPHController, weaponName: string): Tool
@@ -639,7 +818,9 @@ function SPHController._loadTrack(
 		return existing
 	end
 
-	local animation = if animationName == "DefaultR6Walk" then self.walkAnimation else findAnimation(self.animations, animationName)
+	local animation = if animationName == "DefaultR6Walk"
+		then self.walkAnimation
+		else findAnimation(self.animations, animationName)
 	if not animation then
 		warn(`[SPHController] Missing SPH animation {animationName}`)
 		return nil
@@ -663,9 +844,11 @@ function SPHController._playWeaponAnimation(
 	self: SPHController,
 	animationName: string?,
 	looped: boolean?,
-	priority: Enum.AnimationPriority?
+	priority: Enum.AnimationPriority?,
+	fadeTime: number?,
+	speed: number?
 ): AnimationTrack?
-	stopTrack(self.activeWeaponTrack)
+	stopTrack(self.activeWeaponTrack, fadeTime)
 	local track = self:_loadTrack(
 		self.weaponAnimator,
 		self.weaponTracks,
@@ -675,7 +858,26 @@ function SPHController._playWeaponAnimation(
 	)
 	self.activeWeaponTrack = track
 	if track then
-		track:Play(0.12)
+		track:Play(fadeTime or POSE_BLEND_TIME)
+		if speed then
+			track:AdjustSpeed(speed)
+		end
+	end
+	return track
+end
+
+function SPHController._playWeaponIdle(self: SPHController, animationName: string?, fadeTime: number?): AnimationTrack?
+	local requestedTrack = if animationName then self.weaponTracks[animationName] else nil
+	if self.weaponIdleTrack and self.weaponIdleTrack ~= requestedTrack then
+		stopTrack(self.weaponIdleTrack, fadeTime)
+		self.weaponIdleTrack = nil
+	end
+
+	local track =
+		self:_loadTrack(self.weaponAnimator, self.weaponTracks, animationName, Enum.AnimationPriority.Idle, true)
+	self.weaponIdleTrack = track
+	if track and not track.IsPlaying then
+		track:Play(fadeTime or 0)
 	end
 	return track
 end
@@ -687,16 +889,11 @@ function SPHController._playMovementAnimation(
 	speed: number?
 ): ()
 	stopTrack(self.activeMovementTrack)
-	local track = self:_loadTrack(
-		self.animator,
-		self.tracks,
-		animationName,
-		priority or Enum.AnimationPriority.Movement,
-		true
-	)
+	local track =
+		self:_loadTrack(self.animator, self.tracks, animationName, priority or Enum.AnimationPriority.Movement, true)
 	self.activeMovementTrack = track
 	if track then
-		track:Play(0.15)
+		track:Play(POSE_BLEND_TIME)
 		if speed then
 			track:AdjustSpeed(speed)
 		end
@@ -707,22 +904,18 @@ function SPHController._playStanceAnimation(
 	self: SPHController,
 	animationName: string?,
 	priority: Enum.AnimationPriority?
-): ()
+): AnimationTrack?
 	stopTrack(self.activeStanceTrack)
-	local track = self:_loadTrack(
-		self.animator,
-		self.tracks,
-		animationName,
-		priority or Enum.AnimationPriority.Action,
-		true
-	)
+	local track =
+		self:_loadTrack(self.animator, self.tracks, animationName, priority or Enum.AnimationPriority.Action, true)
 	self.activeStanceTrack = track
 	if track then
-		track:Play(0.15)
+		track:Play(POSE_BLEND_TIME)
 	end
+	return track
 end
 
-function SPHController._playStanceIdle(self: SPHController): ()
+function SPHController._playStanceIdle(self: SPHController): number
 	stopTrack(self.activeMovementTrack)
 	self.activeMovementTrack = nil
 	if self.stance == "Crouching" then
@@ -732,9 +925,12 @@ function SPHController._playStanceIdle(self: SPHController): ()
 	else
 		self:_playStanceAnimation(nil)
 	end
-	if self.equipped then
-		self:_playWeaponAnimation(self.animationNames.idle, true, Enum.AnimationPriority.Idle)
+	if self.equipped and not self.reloading then
+		stopTrack(self.activeWeaponTrack)
+		self.activeWeaponTrack = nil
+		self:_playWeaponIdle(self.animationNames.idle)
 	end
+	return POSE_BLEND_TIME
 end
 
 function SPHController._applyStanceHeight(self: SPHController): ()
@@ -775,22 +971,16 @@ function SPHController._updateHeadPose(self: SPHController): ()
 
 	local torsoDirection = self.torso.CFrame.LookVector
 	local cameraDirection = self.rootPart.CFrame:ToObjectSpace(lookDirection).LookVector
-	local rotationCFrame = CFrame.Angles(
-		0,
-		math.asin(math.clamp(cameraDirection.X, -1, 1)) / 1.15,
-		0
-	) * CFrame.Angles(
-		-math.asin(math.clamp(lookDirection.LookVector.Y, -1, 1))
-			+ math.asin(math.clamp(torsoDirection.Y, -1, 1)),
-		0,
-		0
-	)
-	neckJoint.C1 = CFrame.new(0, -0.5, 0)
-		* rotationCFrame
-		* CFrame.Angles(-math.rad(90), 0, math.rad(180))
+	local rotationCFrame = CFrame.Angles(0, math.asin(math.clamp(cameraDirection.X, -1, 1)) / 1.15, 0)
+		* CFrame.Angles(
+			-math.asin(math.clamp(lookDirection.LookVector.Y, -1, 1)) + math.asin(math.clamp(torsoDirection.Y, -1, 1)),
+			0,
+			0
+		)
+	neckJoint.C1 = CFrame.new(0, -0.5, 0) * rotationCFrame * CFrame.Angles(-math.rad(90), 0, math.rad(180))
 end
 
-function SPHController._playGaitAnimation(self: SPHController, gait: Gait): ()
+function SPHController._playGaitAnimation(self: SPHController, gait: Enums.Movement): ()
 	if gait == "CrouchWalk" then
 		-- Spearhead keeps the stance pose running beneath the higher-priority
 		-- locomotion layer. CrouchMove and ProneMove do not provide a complete
@@ -818,14 +1008,19 @@ function SPHController._playGaitAnimation(self: SPHController, gait: Gait): ()
 	end
 
 	if self.equipped then
+		self:_playWeaponIdle(self.animationNames.idle)
 		if gait == "Sprint" then
 			self:_playWeaponAnimation(self.animationNames.sprint, true, Enum.AnimationPriority.Movement)
 		elseif gait == "ProneWalk" then
 			-- Spearhead keeps the weapon rig on its idle loop while the humanoid
 			-- supplies the equipped prone crawl pose.
-			self:_playWeaponAnimation(self.animationNames.weaponProneMove, true, Enum.AnimationPriority.Idle)
+			stopTrack(self.activeWeaponTrack)
+			self.activeWeaponTrack = nil
+			self:_playWeaponIdle(self.animationNames.weaponProneMove)
 		else
-			self:_playWeaponAnimation(self.animationNames.idle, true, Enum.AnimationPriority.Idle)
+			stopTrack(self.activeWeaponTrack)
+			self.activeWeaponTrack = nil
+			self:_playWeaponIdle(self.animationNames.idle)
 		end
 	end
 end
@@ -837,22 +1032,18 @@ function SPHController._configureWeaponStats(self: SPHController, template: Tool
 	-- Rebuilding the table prevents the previously equipped weapon's family from
 	-- leaking into a weapon that omits one or more animation fields.
 	self.animationNames = mergeAnimationNames(nil)
-	self.magazineCapacity = math.max(
-		1,
-		math.floor(config.magazineCapacity or getMagazineCapacity(template, stats))
-	)
+	self.magazineCapacity = math.max(1, math.floor(getMagazineCapacity(stats)))
 	self.ammo = self.magazineCapacity
 	self.reserveAmmo = math.max(0, math.floor(config.reserveAmmo or self.magazineCapacity * 3))
 
 	local rawFireRate = getNumber(stats, { "fireRate", "firerate", "rateOfFire" }, 600)
 	local inferredFireInterval = if rawFireRate > 10 then 60 / rawFireRate else rawFireRate
 	self.fireInterval = math.max(0.01, config.fireInterval or inferredFireInterval)
-	self.reloadDuration = math.max(
-		0,
-		config.reloadDuration or getNumber(stats, { "reloadTime", "reloadDuration" }, 4)
-	)
+	self.reloadDuration = math.max(0, config.reloadDuration or getNumber(stats, { "reloadTime", "reloadDuration" }, 4))
 	self.range = math.max(1, config.range or getNumber(stats, { "maxRange", "range", "range1" }, 1000))
 	self.damage = math.max(0, config.damage or getNumber(stats, { "damage", "damage0", "baseDamage" }, 25))
+	self.aimTime = math.max(0, config.aimTime or getNumber(stats, { "aimTime" }, 0.7))
+	self.equipSpeedModifier = math.max(0.01, config.equipSpeedModifier or getNumber(stats, { "equipSpeedModifier" }, 1))
 	self.weaponServerOffset = getCFrame(stats, { "serverOffset" }, CFrame.new(0, 0, -0.4))
 	self.holsterPosition = getCFrame(stats, { "holsterPosition" }, CFrame.new(1, -0.8, 0.5))
 	self.animatedWeaponParts = getStringList(stats, { "rigParts", "animatedParts" })
@@ -875,6 +1066,26 @@ function SPHController._configureWeaponStats(self: SPHController, template: Tool
 	end
 end
 
+function SPHController.GetHumanoid(self: SPHController): Humanoid
+	return self.humanoid
+end
+
+function SPHController.GetHeadPart(self: SPHController): BasePart
+	return self.head
+end
+
+function SPHController.GetModel(self: SPHController): Model
+	return self.model
+end
+
+function SPHController.GetStance(self: SPHController): Enums.Posture
+	return self.stance
+end
+
+function SPHController.GetGait(self: SPHController): Enums.Movement?
+	return self.gait
+end
+
 function SPHController.GetAmmo(self: SPHController): (number, number)
 	return self.ammo, self.reserveAmmo
 end
@@ -891,114 +1102,84 @@ function SPHController.CanFire(self: SPHController): boolean
 	return self.equipped and not self.reloading and self.ammo > 0 and os.clock() >= self.nextShotAt
 end
 
-function SPHController.SetStance(self: SPHController, stance: Stance): ()
+function SPHController._setStanceNow(self: SPHController, stance: Enums.Posture): number
 	assert(stance == "Standing" or stance == "Crouching" or stance == "Proning", `Invalid stance {stance}`)
 	self.stance = stance
 	self.gait = nil
 	self:_applyStanceHeight()
-	self:_playStanceIdle()
+	local transitionDuration = self:_playStanceIdle()
 	self:_setStateAttributes()
+	return transitionDuration
 end
 
-function SPHController.Aim(self: SPHController, targetPosition: Vector3): ()
+function SPHController._aimNow(
+	self: SPHController,
+	targetPosition: Vector3,
+	isCancelled: () -> boolean
+): (AnimationTrack?, boolean, number)
 	self.aimTarget = targetPosition
 	self.humanoid.AutoRotate = false
+	local transitionTime = self.aimTime / (4 * self.aimSpeed)
 
-	local flatTarget = Vector3.new(targetPosition.X, self.rootPart.Position.Y, targetPosition.Z)
-	if (flatTarget - self.rootPart.Position).Magnitude > 0.001 then
-		self.rootPart.CFrame = CFrame.lookAt(self.rootPart.Position, flatTarget)
-	end
-
+	self:_playWeaponIdle(self.animationNames.idle)
+	local aimTrack: AnimationTrack? = nil
 	if self.animationNames.aim then
-		local aimTrack = self.weaponTracks[self.animationNames.aim]
+		aimTrack = self.weaponTracks[self.animationNames.aim]
 		if not aimTrack or self.activeWeaponTrack ~= aimTrack or not aimTrack.IsPlaying then
-			self:_playWeaponAnimation(self.animationNames.aim, true, Enum.AnimationPriority.Action)
+			aimTrack =
+				self:_playWeaponAnimation(self.animationNames.aim, true, Enum.AnimationPriority.Action, transitionTime)
 		end
 	end
+
+	return aimTrack, lerpRootFacing(self, targetPosition, transitionTime, isCancelled), transitionTime
 end
 
-function SPHController.ClearAim(self: SPHController): ()
+function SPHController._clearAimNow(self: SPHController): (AnimationTrack?, number)
 	self.aimTarget = nil
 	self.humanoid.AutoRotate = true
 
 	local aimAnimationName = self.animationNames.aim
 	local aimTrack = if aimAnimationName then self.weaponTracks[aimAnimationName] else nil
 	if aimTrack and self.activeWeaponTrack == aimTrack then
-		stopTrack(aimTrack)
+		local transitionTime = self.aimTime / (6 * self.aimSpeed)
+		stopTrack(aimTrack, transitionTime)
 		self.activeWeaponTrack = nil
 		if self.equipped and not self.reloading then
-			self:_playWeaponAnimation(self.animationNames.idle, true, Enum.AnimationPriority.Idle)
+			self:_playWeaponIdle(self.animationNames.idle)
 		end
+		return aimTrack, transitionTime
+	end
+	return nil, 0
+end
+
+function SPHController._restoreWeaponLoop(self: SPHController): ()
+	if not self.equipped or self.reloading then
+		return
+	end
+	self:_playWeaponIdle(self.animationNames.idle)
+	if self.aimTarget and self.animationNames.aim then
+		local aimTrack = self.weaponTracks[self.animationNames.aim]
+		if not aimTrack or self.activeWeaponTrack ~= aimTrack or not aimTrack.IsPlaying then
+			self:_playWeaponAnimation(
+				self.animationNames.aim,
+				true,
+				Enum.AnimationPriority.Action,
+				self.aimTime / (4 * self.aimSpeed)
+			)
+		end
+	else
+		stopTrack(self.activeWeaponTrack)
+		self.activeWeaponTrack = nil
 	end
 end
 
-function SPHController.Equip(self: SPHController, weaponName: string?): boolean
-	if self.destroyed or self.reloading then
-		return false
-	end
-
-	local requestedWeapon = weaponName or self.weaponName
-	if self.equipped and self.weapon and requestedWeapon == self.weaponName then
-		return true
-	end
-
-	local template = resolveToolTemplate(requestedWeapon)
-	if requestedWeapon ~= self.weaponName then
-		self:Unequip()
-		self:_configureWeaponStats(template, {})
-		self.weaponName = requestedWeapon
-		self.weaponBaseMotor.C0 = self.weaponServerOffset
-		self:_createInventoryTool(requestedWeapon)
-		self:_showHolster()
-	end
-	self.weaponName = requestedWeapon
-
-	local tool = self.weapon or self:_createInventoryTool(requestedWeapon)
-	self.humanoid:UnequipTools()
-	tool.Parent = self.inventory
-	self:_destroyHolster()
-	self:_clearEquippedWeaponModel()
-	self.humanoid:EquipTool(tool)
-	if tool.Parent ~= self.character then
-		tool.Parent = self.character
-	end
-
-	local model = resolveWeaponModelTemplate(requestedWeapon):Clone()
-	model.Name = requestedWeapon
-	local grip = prepareWeaponModel(model, self.animatedWeaponParts)
-	local weaponFolder = self.weaponRig:FindFirstChild("Weapon")
-	assert(weaponFolder, `{self.weaponRig:GetFullName()} is missing Weapon`)
-	model.Parent = weaponFolder
-	local gripMotor = Instance.new("Motor6D")
-	gripMotor.Name = "GunMotor"
-	gripMotor.Part0 = self.weaponAnimBase
-	gripMotor.Part1 = grip
-	gripMotor.Parent = self.weaponAnimBase
-	self.weaponModel = model
-	self.weaponGripMotor = gripMotor
-	self:_setWeaponRigVisible(true)
-	self.equipped = true
-	self:_setStateAttributes()
-
-	local track = self:_playWeaponAnimation(self.animationNames.equip, false, Enum.AnimationPriority.Action)
-	if track then
-		local loadedLength = waitForTrackLength(track, 2)
-		local duration = if loadedLength > 0 then loadedLength else 0.5
-		waitForDuration(duration, function(): boolean
-			return self.destroyed or not self.equipped
-		end)
-	end
-	if self.equipped then
-		self:_playWeaponAnimation(self.animationNames.idle, true, Enum.AnimationPriority.Idle)
-	end
-	return self.equipped
-end
-
-function SPHController.Unequip(self: SPHController): ()
+function SPHController._unequipNow(self: SPHController): ()
 	self.equipped = false
 	self.reloading = false
 	stopTrack(self.activeWeaponTrack)
 	self.activeWeaponTrack = nil
+	stopTrack(self.weaponIdleTrack)
+	self.weaponIdleTrack = nil
 	self.humanoid:UnequipTools()
 	if self.weapon then
 		self.weapon.Parent = self.inventory
@@ -1009,148 +1190,422 @@ function SPHController.Unequip(self: SPHController): ()
 	self:_setStateAttributes()
 end
 
-function SPHController.Fire(self: SPHController): boolean
-	if self.destroyed or not self:CanFire() then
-		return false
-	end
-
-	self.ammo -= 1
-	self.nextShotAt = os.clock() + self.fireInterval
-	self:_setStateAttributes()
-
-	local origin = findMuzzlePosition(self.weaponModel, self.weapon, self.rootPart)
-	local direction: Vector3
-	if self.aimTarget and (self.aimTarget - origin).Magnitude > 0.001 then
-		direction = (self.aimTarget - origin).Unit
-	else
-		direction = self.rootPart.CFrame.LookVector
-	end
-
-	local raycastParams = RaycastParams.new()
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = { self.character }
-	local result = Workspace:Raycast(origin, direction * self.range, raycastParams)
-	local hitPosition = origin + direction * self.range
-	if result then
-		hitPosition = result.Position
-		local hitHumanoid = findHumanoidFromHit(result.Instance)
-		if hitHumanoid and hitHumanoid ~= self.humanoid then
-			hitHumanoid:TakeDamage(self.damage)
+function SPHController._runWeaponAnimationAction(self: SPHController, animationName: string?): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		local track: AnimationTrack? = nil
+		if
+			onCancel(function(): ()
+				cancelled = true
+				if track and self.activeWeaponTrack == track then
+					stopTrack(track)
+					self.activeWeaponTrack = nil
+					self:_restoreWeaponLoop()
+				end
+			end)
+		then
+			return
 		end
-	end
-	createTracer(origin, hitPosition)
 
-	local effectsSource: Instance? = self.weaponModel or self.weapon
-	if effectsSource then
-		local fireSound = findNamedDescendant(effectsSource, { "Fire", "FireSound", "Shoot" })
-		if fireSound and fireSound:IsA("Sound") then
-			fireSound:Play()
+		if self.destroyed or not self.equipped or self.reloading then
+			resolve(false)
+			return
 		end
-		local muzzle = findNamedDescendant(effectsSource, { "Muzzle", "FirePoint" })
-		if muzzle then
-			for _, descendant in ipairs(muzzle:GetDescendants()) do
-				if descendant:IsA("ParticleEmitter") then
-					descendant:Emit(1)
+		track = self:_playWeaponAnimation(animationName, false, Enum.AnimationPriority.Action)
+		if not track then
+			resolve(false)
+			return
+		end
+
+		local completed = waitForTrackCompletion(track, 0.25, function(): boolean
+			return cancelled or self.destroyed or not self.equipped
+		end)
+		if cancelled then
+			return
+		end
+		if completed then
+			self:_restoreWeaponLoop()
+		end
+		resolve(completed)
+	end)
+end
+
+function SPHController.SetStance(self: SPHController, stance: Enums.Posture): Promise.Promise<boolean>
+	return runAsyncAction(function(): (boolean, number)
+		if self.destroyed then
+			return false, 0
+		end
+		return true, self:_setStanceNow(stance)
+	end, function(): boolean
+		return self.destroyed
+	end)
+end
+
+function SPHController.Aim(self: SPHController, targetPosition: Vector3): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		local track: AnimationTrack? = nil
+		if
+			onCancel(function(): ()
+				cancelled = true
+				if track and self.activeWeaponTrack == track then
+					stopTrack(track, 0)
+					self.activeWeaponTrack = nil
+				end
+			end)
+		then
+			return
+		end
+
+		if self.destroyed or self.reloading or not self.equipped then
+			resolve(false)
+			return
+		end
+
+		local transitionTime: number
+		local completed: boolean
+		track, completed, transitionTime = self:_aimNow(targetPosition, function(): boolean
+			return cancelled or self.destroyed or self.reloading or not self.equipped
+		end)
+		if cancelled then
+			if track and self.activeWeaponTrack == track then
+				stopTrack(track, 0)
+				self.activeWeaponTrack = nil
+			end
+			return
+		end
+		if completed and track then
+			completed = waitForTrackWeight(track, 1, transitionTime, function(): boolean
+				return cancelled or self.destroyed or self.reloading or not self.equipped
+			end)
+		end
+		if not cancelled then
+			resolve(completed)
+		end
+	end)
+end
+
+function SPHController.ClearAim(self: SPHController): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		local track: AnimationTrack? = nil
+		if onCancel(function(): ()
+			cancelled = true
+			stopTrack(track, 0)
+		end) then
+			return
+		end
+
+		if self.destroyed then
+			resolve(false)
+			return
+		end
+
+		local transitionTime: number
+		track, transitionTime = self:_clearAimNow()
+		local completed = if track
+			then waitForTrackWeight(track, 0, transitionTime, function(): boolean
+				return cancelled or self.destroyed
+			end)
+			else true
+		if not cancelled then
+			resolve(completed)
+		end
+	end)
+end
+
+function SPHController.Equip(self: SPHController, weaponName: string?): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		local track: AnimationTrack? = nil
+		if
+			onCancel(function(): ()
+				cancelled = true
+				if self.equipped then
+					self:_unequipNow()
+				end
+			end)
+		then
+			return
+		end
+
+		if self.destroyed or self.reloading then
+			resolve(false)
+			return
+		end
+
+		local requestedWeapon = weaponName or self.weaponName
+		if self.equipped and self.weapon and requestedWeapon == self.weaponName then
+			resolve(true)
+			return
+		end
+
+		local template = resolveToolTemplate(requestedWeapon)
+		if requestedWeapon ~= self.weaponName then
+			self:_unequipNow()
+			self:_configureWeaponStats(template, {})
+			self.weaponName = requestedWeapon
+			self.weaponBaseMotor.C0 = self.weaponServerOffset
+			self:_createInventoryTool(requestedWeapon)
+			self:_showHolster()
+		end
+		self.weaponName = requestedWeapon
+
+		local tool = self.weapon or self:_createInventoryTool(requestedWeapon)
+		self.humanoid:UnequipTools()
+		tool.Parent = self.inventory
+		self:_destroyHolster()
+		self:_clearEquippedWeaponModel()
+		self.humanoid:EquipTool(tool)
+		if tool.Parent ~= self.character then
+			tool.Parent = self.character
+		end
+
+		local model = resolveWeaponModelTemplate(requestedWeapon):Clone()
+		model.Name = requestedWeapon
+		local grip = prepareWeaponModel(model, self.animatedWeaponParts)
+		local weaponFolder = self.weaponRig:FindFirstChild("Weapon")
+		assert(weaponFolder, `{self.weaponRig:GetFullName()} is missing Weapon`)
+		model.Parent = weaponFolder
+		local gripMotor = Instance.new("Motor6D")
+		gripMotor.Name = "GunMotor"
+		gripMotor.Part0 = self.weaponAnimBase
+		gripMotor.Part1 = grip
+		gripMotor.Parent = self.weaponAnimBase
+		self.weaponModel = model
+		self.weaponGripMotor = gripMotor
+		table.clear(self.weaponPartTransparencies)
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				self.weaponPartTransparencies[descendant] = descendant.Transparency
+			end
+		end
+		self:_setWeaponRigVisible(false)
+		self.equipped = true
+		self:_setStateAttributes()
+
+		track = self:_playWeaponAnimation(
+			self.animationNames.equip,
+			false,
+			Enum.AnimationPriority.Action2,
+			0,
+			self.equipSpeedModifier
+		)
+		-- CharacterClient starts idle immediately underneath Action2 equip. Keeping
+		-- the stable loop alive removes the default-pose gap at the end of equip.
+		self:_playWeaponIdle(self.animationNames.idle, 0)
+		-- CharacterClient also preloads its aim track during equip. Loading it here
+		-- lets the later aim fade begin immediately instead of pausing on first use.
+		self:_loadTrack(
+			self.weaponAnimator,
+			self.weaponTracks,
+			self.animationNames.aim,
+			Enum.AnimationPriority.Action,
+			true
+		)
+		if track then
+			waitForWeaponPose(self, track, function(): boolean
+				return cancelled or self.destroyed or not self.equipped
+			end)
+		end
+		if cancelled then
+			return
+		end
+		if self.equipped then
+			self:_setWeaponRigVisible(true)
+		end
+
+		local completed = true
+		if track then
+			completed = waitForTrackCompletion(track, 0.5 / self.equipSpeedModifier, function(): boolean
+				return cancelled or self.destroyed or not self.equipped
+			end)
+		end
+		if cancelled then
+			return
+		end
+		if track and self.activeWeaponTrack == track then
+			self.activeWeaponTrack = nil
+		end
+		if completed and self.equipped then
+			self:_restoreWeaponLoop()
+		end
+		resolve(completed and self.equipped)
+	end)
+end
+
+function SPHController.Unequip(self: SPHController): Promise.Promise<boolean>
+	return runAsyncAction(function(): (boolean, number)
+		if self.destroyed then
+			return false, 0
+		end
+		self:_unequipNow()
+		return true, 0
+	end, function(): boolean
+		return self.destroyed
+	end)
+end
+
+function SPHController.Fire(self: SPHController): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		local track: AnimationTrack? = nil
+		if
+			onCancel(function(): ()
+				cancelled = true
+				if track and self.activeWeaponTrack == track then
+					stopTrack(track)
+					self.activeWeaponTrack = nil
+					self:_restoreWeaponLoop()
+				end
+			end)
+		then
+			return
+		end
+
+		if self.destroyed or not self:CanFire() then
+			resolve(false)
+			return
+		end
+
+		self.ammo -= 1
+		self.nextShotAt = os.clock() + self.fireInterval
+		self:_setStateAttributes()
+
+		local origin = findMuzzlePosition(self.weaponModel, self.weapon, self.rootPart)
+		local direction: Vector3
+		if self.aimTarget and (self.aimTarget - origin).Magnitude > 0.001 then
+			direction = (self.aimTarget - origin).Unit
+		else
+			direction = self.rootPart.CFrame.LookVector
+		end
+
+		local raycastParams = RaycastParams.new()
+		raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+		raycastParams.FilterDescendantsInstances = { self.character }
+		local result = Workspace:Raycast(origin, direction * self.range, raycastParams)
+		local hitPosition = origin + direction * self.range
+		if result then
+			hitPosition = result.Position
+			local hitHumanoid = findHumanoidFromHit(result.Instance)
+			if hitHumanoid and hitHumanoid ~= self.humanoid then
+				hitHumanoid:TakeDamage(self.damage)
+			end
+		end
+		createTracer(origin, hitPosition)
+
+		local effectsSource: Instance? = self.weaponModel or self.weapon
+		if effectsSource then
+			local fireSound = findNamedDescendant(effectsSource, { "Fire", "FireSound", "Shoot" })
+			if fireSound and fireSound:IsA("Sound") then
+				fireSound:Play()
+			end
+			local muzzle = findNamedDescendant(effectsSource, { "Muzzle", "FirePoint" })
+			if muzzle then
+				for _, descendant in ipairs(muzzle:GetDescendants()) do
+					if descendant:IsA("ParticleEmitter") then
+						descendant:Emit(1)
+					end
 				end
 			end
 		end
-	end
 
-	if self.animationNames.fire then
-		self:_playWeaponAnimation(self.animationNames.fire, false, Enum.AnimationPriority.Action)
-	end
-	return true
+		if self.animationNames.fire then
+			track = self:_playWeaponAnimation(self.animationNames.fire, false, Enum.AnimationPriority.Action)
+		end
+		local completed = true
+		if track then
+			completed = waitForTrackCompletion(track, 0.25, function(): boolean
+				return cancelled or self.destroyed or not self.equipped
+			end)
+		end
+		if cancelled then
+			return
+		end
+		if completed and track then
+			self:_restoreWeaponLoop()
+		end
+		resolve(completed)
+	end)
 end
 
-function SPHController.Reload(self: SPHController): boolean
-	if self.destroyed or not self.equipped or self.reloading then
-		return false
-	end
-	if self.ammo >= self.magazineCapacity or self.reserveAmmo <= 0 then
-		return false
-	end
-
-	self.reloading = true
-	self:_setStateAttributes()
-	local track = self:_playWeaponAnimation(self.animationNames.reload, false, Enum.AnimationPriority.Action)
-	local duration = self.reloadDuration
-	if track then
-		local loadedLength = waitForTrackLength(track, 2)
-		if loadedLength > 0 then
-			duration = loadedLength
+function SPHController.Reload(self: SPHController): Promise.Promise<boolean>
+	return Promise.new(function(resolve, _reject, onCancel): ()
+		local cancelled = false
+		local track: AnimationTrack? = nil
+		if
+			onCancel(function(): ()
+				cancelled = true
+				self.reloading = false
+				self:_setStateAttributes()
+				if track and self.activeWeaponTrack == track then
+					stopTrack(track)
+					self.activeWeaponTrack = nil
+					self:_restoreWeaponLoop()
+				end
+			end)
+		then
+			return
 		end
-	end
 
-	local completed = waitForDuration(duration, function(): boolean
-		return self.destroyed or not self.equipped
-	end)
-	if not completed then
+		if self.destroyed or not self.equipped or self.reloading then
+			resolve(false)
+			return
+		end
+		if self.ammo >= self.magazineCapacity or self.reserveAmmo <= 0 then
+			resolve(false)
+			return
+		end
+
+		self.reloading = true
+		self:_setStateAttributes()
+		track = self:_playWeaponAnimation(self.animationNames.reload, false, Enum.AnimationPriority.Action)
+		local completed = if track
+			then waitForTrackCompletion(track, self.reloadDuration, function(): boolean
+				return cancelled or self.destroyed or not self.equipped
+			end)
+			else waitForDuration(self.reloadDuration, function(): boolean
+				return cancelled or self.destroyed or not self.equipped
+			end)
+		if cancelled then
+			return
+		end
+		if not completed then
+			self.reloading = false
+			self:_setStateAttributes()
+			resolve(false)
+			return
+		end
+
+		local needed = self.magazineCapacity - self.ammo
+		local transferred = math.min(needed, self.reserveAmmo)
+		self.ammo += transferred
+		self.reserveAmmo -= transferred
 		self.reloading = false
 		self:_setStateAttributes()
-		return false
-	end
-
-	local needed = self.magazineCapacity - self.ammo
-	local transferred = math.min(needed, self.reserveAmmo)
-	self.ammo += transferred
-	self.reserveAmmo -= transferred
-	self.reloading = false
-	self:_setStateAttributes()
-	self:_playWeaponAnimation(self.animationNames.idle, true, Enum.AnimationPriority.Idle)
-	return true
-end
-
-function SPHController.Chamber(self: SPHController): boolean
-	if self.destroyed or not self.equipped or self.reloading then
-		return false
-	end
-	local track = self:_playWeaponAnimation(self.animationNames.chamber, false, Enum.AnimationPriority.Action)
-	if not track then
-		return false
-	end
-	local loadedLength = waitForTrackLength(track, 2)
-	local duration = if loadedLength > 0 then loadedLength else 0.25
-	return waitForDuration(duration, function(): boolean
-		return self.destroyed or not self.equipped
+		self:_restoreWeaponLoop()
+		resolve(true)
 	end)
 end
 
-function SPHController.CloseBolt(self: SPHController): boolean
-	if self.destroyed or not self.equipped or self.reloading then
-		return false
-	end
-	local track = self:_playWeaponAnimation(self.animationNames.close, false, Enum.AnimationPriority.Action)
-	if not track then
-		return false
-	end
-	local loadedLength = waitForTrackLength(track, 2)
-	local duration = if loadedLength > 0 then loadedLength else 0.25
-	return waitForDuration(duration, function(): boolean
-		return self.destroyed or not self.equipped
-	end)
+function SPHController.Chamber(self: SPHController): Promise.Promise<boolean>
+	return self:_runWeaponAnimationAction(self.animationNames.chamber)
 end
 
-function SPHController.SwitchFireMode(self: SPHController): boolean
-	if self.destroyed or not self.equipped or self.reloading then
-		return false
-	end
-	local track = self:_playWeaponAnimation(self.animationNames.switch, false, Enum.AnimationPriority.Action)
-	if not track then
-		return false
-	end
-	local loadedLength = waitForTrackLength(track, 2)
-	local duration = if loadedLength > 0 then loadedLength else 0.25
-	return waitForDuration(duration, function(): boolean
-		return self.destroyed or not self.equipped
-	end)
+function SPHController.CloseBolt(self: SPHController): Promise.Promise<boolean>
+	return self:_runWeaponAnimationAction(self.animationNames.close)
 end
 
-function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePart, gait: Gait): boolean
+function SPHController.SwitchFireMode(self: SPHController): Promise.Promise<boolean>
+	return self:_runWeaponAnimationAction(self.animationNames.switch)
+end
+
+function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePart, gait: Enums.Movement): boolean
 	if self.destroyed then
 		return false
 	end
 
-	self:ClearAim()
+	self:_clearAimNow()
 	self.moveSerial += 1
 	local serial = self.moveSerial
 	local speed: number
@@ -1168,6 +1623,7 @@ function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePa
 		self.stance = "Standing"
 		speed = self.walkSpeed
 	end
+	speed *= self.speedMult
 
 	self.gait = gait
 	self:_applyStanceHeight()
@@ -1178,11 +1634,20 @@ function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePa
 	local destinationPosition = if typeof(destination) == "Instance"
 		then (destination :: BasePart).Position
 		else destination :: Vector3
+	self.pendingPathFailure = nil
+	self.terminalPathFailure = nil
+	self.character:SetAttribute("SPHPathError", nil)
 	self.runPath(destinationPosition)
 
 	local startedAt = os.clock()
+	local lastSampleAt = startedAt
+	local lastRepathAt = startedAt
+	local slowElapsed = 0
 	local reached = false
 	while not self.destroyed and self.moveSerial == serial do
+		local now = os.clock()
+		local sampleDelta = now - lastSampleAt
+		lastSampleAt = now
 		local offset = self.rootPart.Position - destinationPosition
 		local closeEnough = Vector3.new(offset.X, 0, offset.Z).Magnitude <= self.reachDistance
 		local touchedWaypoint = if typeof(destination) == "Instance"
@@ -1196,8 +1661,40 @@ function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePa
 			end
 			break
 		end
-		if self.humanoid.Health <= 0 or os.clock() - startedAt >= self.moveTimeout then
+		if self.humanoid.Health <= 0 or now - startedAt >= self.moveTimeout then
 			break
+		end
+		if self.terminalPathFailure then
+			break
+		end
+
+		if self.repathEnabled then
+			if self.humanoid.FloorMaterial == Enum.Material.Air then
+				slowElapsed = 0
+			else
+				local velocity = self.rootPart.AssemblyLinearVelocity
+				local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+				if horizontalSpeed < self.repathVelocityThreshold then
+					slowElapsed += sampleDelta
+				else
+					slowElapsed = 0
+				end
+			end
+
+			local repathReason = self.pendingPathFailure
+			if not repathReason and slowElapsed >= self.repathStuckDuration then
+				repathReason = "LowVelocity"
+			end
+
+			if repathReason and now - lastRepathAt >= self.repathCooldown then
+				self.pendingPathFailure = nil
+				self.pathRepathCount += 1
+				self.character:SetAttribute("SPHPathRepathCount", self.pathRepathCount)
+				self.character:SetAttribute("SPHPathRepathReason", repathReason)
+				self.runPath(destinationPosition)
+				lastRepathAt = now
+				slowElapsed = 0
+			end
 		end
 		task.wait(0.1)
 	end
@@ -1208,11 +1705,18 @@ function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePa
 		self:_playStanceIdle()
 		self:_setStateAttributes()
 	end
+	if reached then
+		self.pendingPathFailure = nil
+		self.terminalPathFailure = nil
+		self.character:SetAttribute("SPHPathError", nil)
+	end
 	return reached
 end
 
 function SPHController.StopMoving(self: SPHController): ()
 	self.moveSerial += 1
+	self.pendingPathFailure = nil
+	self.terminalPathFailure = nil
 	self.stopPath()
 	self.gait = nil
 	self:_playStanceIdle()
@@ -1225,8 +1729,8 @@ function SPHController.Destroy(self: SPHController): ()
 	end
 	self.destroyed = true
 	self:StopMoving()
-	self:Unequip()
-	self:ClearAim()
+	self:_unequipNow()
+	self:_clearAimNow()
 	if self.headPoseConnection then
 		self.headPoseConnection:Disconnect()
 		self.headPoseConnection = nil
@@ -1256,7 +1760,7 @@ function SPHController.Destroy(self: SPHController): ()
 end
 
 function SPHController.new(character: Model, config: Config?): SPHController
-	local controllerConfig = config or {}
+	local controllerConfig: Config = config or {}
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	assert(humanoid, `{character:GetFullName()} is missing a Humanoid`)
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
@@ -1271,6 +1775,8 @@ function SPHController.new(character: Model, config: Config?): SPHController
 	assert(rightArm and rightArm:IsA("BasePart"), `{character:GetFullName()} is missing a right arm`)
 	local leftArm = character:FindFirstChild("Left Arm") or character:FindFirstChild("LeftUpperArm")
 	assert(leftArm and leftArm:IsA("BasePart"), `{character:GetFullName()} is missing a left arm`)
+
+	local model = humanoid.Parent
 
 	local animator = humanoid:FindFirstChildOfClass("Animator")
 	if not animator then
@@ -1298,33 +1804,19 @@ function SPHController.new(character: Model, config: Config?): SPHController
 	local inventory = Instance.new("Folder")
 	inventory.Name = "SPHInventory"
 	inventory.Parent = character
-	local weaponRig, weaponAnimator, weaponAnimBase, weaponBaseMotor = createWeaponRig(
-		character,
-		assets,
-		head,
-		rightArm,
-		leftArm
-	)
+	local weaponRig, weaponAnimator, weaponAnimBase, weaponBaseMotor =
+		createWeaponRig(character, assets, head, rightArm, leftArm)
 
 	local pathfinder = NoobPath.Humanoid(character, DefaultNoobPathConfig.AgentParams, DefaultNoobPathConfig.Precise)
 	pathfinder.Timeout = DefaultNoobPathConfig.Timeout
 	pathfinder.Visualize = DefaultNoobPathConfig.Visualize
-	pathfinder.Error:Connect(function(reason: string): ()
-		character:SetAttribute("SPHPathError", reason)
-		warn(`[SPHController] NoobPath error for {character.Name}: {reason}`)
-	end)
-	pathfinder.Trapped:Connect(function(reason: string): ()
-		character:SetAttribute("SPHPathError", reason)
-	end)
-	pathfinder.Reached:Connect(function(): ()
-		character:SetAttribute("SPHPathError", nil)
-	end)
-
 	local self = setmetatable({
 		character = character,
 		humanoid = humanoid,
+		model = model,
 		animator = animator,
 		rootPart = rootPart,
+		head = head,
 		torso = torso,
 		neckJoint = neckJoint,
 		defaultNeckC1 = if neckJoint then neckJoint.C1 else nil,
@@ -1333,6 +1825,7 @@ function SPHController.new(character: Model, config: Config?): SPHController
 		weaponName = weaponName,
 		weapon = nil,
 		weaponModel = nil,
+		weaponPartTransparencies = {},
 		weaponGripMotor = nil,
 		weaponAnimBase = weaponAnimBase,
 		weaponBaseMotor = weaponBaseMotor,
@@ -1357,12 +1850,23 @@ function SPHController.new(character: Model, config: Config?): SPHController
 		reloadDuration = 4,
 		range = 1000,
 		damage = 25,
+		aimTime = controllerConfig.aimTime or 0.7,
+		aimSpeed = math.max(0.01, controllerConfig.aimSpeed or 1),
+		equipSpeedModifier = controllerConfig.equipSpeedModifier or 1,
 		walkSpeed = controllerConfig.walkSpeed or 12,
 		sprintSpeed = controllerConfig.sprintSpeed or 20,
 		crouchSpeed = controllerConfig.crouchSpeed or 7,
 		proneSpeed = controllerConfig.proneSpeed or 3,
+		speedMult = math.max(0, controllerConfig.speedMult or 1),
 		reachDistance = controllerConfig.reachDistance or 2.5,
 		moveTimeout = controllerConfig.moveTimeout or 30,
+		repathEnabled = controllerConfig.repathEnabled ~= false,
+		repathVelocityThreshold = math.max(0, controllerConfig.repathVelocityThreshold or 0.75),
+		repathStuckDuration = math.max(0.1, controllerConfig.repathStuckDuration or 1.5),
+		repathCooldown = math.max(0.1, controllerConfig.repathCooldown or 0.75),
+		pendingPathFailure = nil,
+		terminalPathFailure = nil,
+		pathRepathCount = 0,
 		defaultHipHeight = humanoid.HipHeight,
 		crouchHipOffset = controllerConfig.crouchHipOffset or -0.15,
 		-- Spearhead's CharacterMovement uses an absolute R6 HipHeight of -2 while
@@ -1374,8 +1878,9 @@ function SPHController.new(character: Model, config: Config?): SPHController
 		activeStanceTrack = nil,
 		activeMovementTrack = nil,
 		activeWeaponTrack = nil,
+		weaponIdleTrack = nil,
 		aimTarget = nil,
-		stance = "Standing" :: Stance,
+		stance = "Standing" :: Enums.Posture,
 		gait = nil,
 		nextShotAt = 0,
 		reloading = false,
@@ -1396,10 +1901,31 @@ function SPHController.new(character: Model, config: Config?): SPHController
 		end,
 	}, SPHController)
 
+	pathfinder.Error:Connect(function(reason: string): ()
+		self.terminalPathFailure = reason
+		character:SetAttribute("SPHPathError", reason)
+		warn(`[SPHController] NoobPath error for {character.Name}: {reason}`)
+	end)
+	pathfinder.Trapped:Connect(function(reason: string): ()
+		self.pendingPathFailure = `Trapped:{reason}`
+		character:SetAttribute("SPHPathError", reason)
+	end)
+	pathfinder.Reached:Connect(function(_waypoint: unknown, partial: boolean?): ()
+		self.pendingPathFailure = nil
+		if partial then
+			self.terminalPathFailure = "PartialPath"
+			character:SetAttribute("SPHPathError", "PartialPath")
+		else
+			self.terminalPathFailure = nil
+			character:SetAttribute("SPHPathError", nil)
+		end
+	end)
+
 	self:_configureWeaponStats(template, controllerConfig)
 	self.weaponBaseMotor.C0 = self.weaponServerOffset
 	self:_createInventoryTool(weaponName)
 	self:_showHolster()
+	character:SetAttribute("SPHPathRepathCount", 0)
 	self.headPoseConnection = RunService.Heartbeat:Connect(function(): ()
 		if not self.destroyed then
 			self:_updateHeadPose()

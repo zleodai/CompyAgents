@@ -81,22 +81,20 @@ function AgentService.BindDebugRemotes(self: AgentService): ()
 
 	local activeRemote = folder:FindFirstChild("DebugSetAgentInDepthDebugActive")
 	if activeRemote and activeRemote:IsA("RemoteEvent") then
-		self.debugActiveConnection = activeRemote.OnServerEvent:Connect(function(
-			_player: Player,
-			agentName: string,
-			isActive: boolean
-		): ()
-			self.activeDebugAgentId = nil
-			if not isActive then
-				return
-			end
-			for _, record in ipairs(self.recordOrder) do
-				if record.name == agentName then
-					self.activeDebugAgentId = record.id
-					break
+		self.debugActiveConnection = activeRemote.OnServerEvent:Connect(
+			function(_player: Player, agentName: string, isActive: boolean): ()
+				self.activeDebugAgentId = nil
+				if not isActive then
+					return
+				end
+				for _, record in ipairs(self.recordOrder) do
+					if record.name == agentName then
+						self.activeDebugAgentId = record.id
+						break
+					end
 				end
 			end
-		end)
+		)
 	end
 
 	local textRemote = folder:FindFirstChild("DebugGetAgentInDepthDebugText")
@@ -107,11 +105,13 @@ function AgentService.BindDebugRemotes(self: AgentService): ()
 				if record.name == agentName then
 					local action = record.agent.plannerState.goapAction
 					local goal = record.agent.plannerState.goal
+					local health = record.agent.controller:GetHumanoid().Health
+					local ammo, _ = record.agent.controller:GetAmmo()
 					return ("%s\nTeam: %s\nHealth: %.0f\nAmmo: %d\nGoal: %s\nAction: %s"):format(
 						record.name,
 						record.teamId,
-						record.agent.health,
-						record.agent.rifleAmmo,
+						health,
+						ammo,
 						if goal then goal.id else "None",
 						if action then action.id else "None"
 					)

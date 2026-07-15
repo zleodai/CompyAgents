@@ -2,33 +2,38 @@
 
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
+local Types = require(CompyServerScripts.Core.Types)
 
-local Enums = require(CompyServerScripts.Core.Enums)
+local function Start(controller: SPHController.SPHController, data: Types.AgentActionData): () end
 
-local Action = {
-	id = "CrouchFromProneCover",
-	cost = 1,
-	preconditions = {
-		inProneCover = true,
-	},
-	effects = {
-		inDanger = false,
-		inProneCover = false,
-		crouched = true,
-	},
-}
+local function Update(controller: SPHController.SPHController, data: Types.AgentActionData, _dt: number): () end
 
-function Action.Start<Agent>(agent: Agent & { posture: number, movement: number }): ()
-	agent.posture = Enums.Posture.Crouching
-	agent.movement = Enums.Movement.Idle
+local function FinishedCheck(controller: SPHController.SPHController, data: Types.AgentActionData): boolean
+	return false
 end
 
-function Action.Update<Agent>(_agent: Agent, _dt: number): () end
+local function End(controller: SPHController.SPHController, data: Types.AgentActionData): () end
 
-function Action.FinishedCheck<Agent>(agent: Agent & { posture: number }): boolean
-	return agent.posture == Enums.Posture.Crouching
+local Action = {}
+
+function Action.new(): Types.Action
+	return {
+		id = "CrouchFromProneCover",
+		cost = 1,
+		preconditions = {
+			inProneCover = true,
+		},
+		effects = {
+			inDanger = false,
+			inProneCover = false,
+			crouched = true,
+		},
+		Start = Start,
+		Update = Update,
+		FinishedCheck = FinishedCheck,
+		End = End,
+	}
 end
-
-function Action.End<Agent>(_agent: Agent): () end
 
 return Action

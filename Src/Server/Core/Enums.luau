@@ -14,12 +14,14 @@ Enums.Behaviour = {
 }
 
 Enums.Movement = {
-	Idle = 1,
-	[1] = "Idle",
-	Walking = 2,
-	[2] = "Walking",
-	Sprinting = 3,
-	[3] = "Sprinting",
+	Walk = 1,
+	[1] = "Walk",
+	Sprint = 2,
+	[2] = "Sprint",
+	CrouchWalk = 3,
+	[3] = "CrouchWalk",
+	ProneWalk = 4,
+	[4] = "ProneWalk",
 }
 
 Enums.Posture = {
