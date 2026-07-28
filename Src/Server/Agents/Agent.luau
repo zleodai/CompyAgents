@@ -7,94 +7,89 @@ local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
 local Types = require(CompyServerScripts.Core.Types)
-local Enums = require(CompyServerScripts.Core.Enums)
-
-local ActionRegistry = require(CompyServerScripts.GOAP.Actions)
-local GOAPPlanner = require(CompyServerScripts.GOAP.Planner)
 
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local VisionSensor = require(CompyServerScripts.Agents.Sensors.VisionSensor)
 local InventoryModule = require(CompyServerScripts.Agents.Modules.InventoryModule)
+local PlannerModule = require(CompyServerScripts.Agents.Modules.PlannerModule)
+local Team = require(CompySharedScripts.Team)
 
+local _DefaultAgentConfig = require(CompySharedScripts.Config.AgentConfig)
 local _DefaultCadenceConfig = require(CompySharedScripts.Config.CadenceConfig)
 
 local Agent = {}
 Agent.__index = Agent
 
-export type PlannerState = {
-	plan: ActionRegistry.ActionList,
-	goal: GOAPPlanner.Goal?,
-	beliefs: { [string]: boolean },
-	goapAction: ActionRegistry.Action?,
-	planIndx: number,
-	planSuccess: boolean,
-	lastFailedPlanAt: number,
-	failedPlanCooldown: number,
-}
-
 type AgentData = {
 	id: number,
-	sightedEnemyLocs: { Vector3 },
+	teamId: Team.Id,
+
+	agentConfig: typeof(_DefaultAgentConfig),
+	cadenceConfig: typeof(_DefaultCadenceConfig),
+
+	noisyEnemyDirection: Vector3,
+	noisyObjectiveDirection: Vector3,
+	sightedEnemyLocs: { BasePart },
 	sightedObjectiveLocs: { Vector3 },
 	sightedCrouchCoverLocs: { Vector3 },
 	sightedProneCoverLocs: { Vector3 },
 
 	behaviourState: Types.BehaviourState,
 	behaviourRequest: Types.BehaviourState?,
-	requestChangeBehaviour: (Types.BehaviourState) -> (),
-	requestReplan: (string) -> (),
-
-	Actions: ActionRegistry.ActionSet,
-	agentActionData: Types.AgentActionData,
-
-	needsReplan: boolean,
-	plannerState: PlannerState,
 
 	controller: SPHController.SPHController,
-	visionSensor: VisionSensor.VisionSensor,
-	inventoryModule: InventoryModule.InventoryModule,
+	vision: VisionSensor.VisionSensor,
+	inventory: InventoryModule.Inventory,
+	planner: PlannerModule.Planner,
 
 	heartBeat: RBXScriptConnection?,
-	cadence: typeof(_DefaultCadenceConfig),
 	visionElapsed: number,
 	plannerElapsed: number,
 
+	active: boolean,
 	ended: boolean,
-
-	startRuntime: () -> (),
-	endRuntime: () -> (),
 }
 
-local function createEmptyPlan(): { Types.Action }
-	return {}
-end
-
-function Agent.RequestChangeBehaviour(self: AgentData, request: Types.BehaviourState): ()
+local function requestChangeBehaviour(self: Agent, request: Types.BehaviourState): ()
 	self.behaviourRequest = request
 end
 
-function Agent.RequestReplan(self: AgentData, _reason: string): ()
-	self.needsReplan = true
+local function requestReplan(self: Agent, reason: string): ()
+	self.planner:Replan(reason)
 end
 
-local function getActionData(self: AgentData): Types.AgentActionData
+local function requestMagazine(self: Agent): boolean
+	return self.inventory:TryTakeMagazine()
+end
+
+local function getSharedData(self: Agent): Types.AgentSharedData
 	return {
+		teamId = self.teamId,
+		noisyEnemyDirection = self.noisyEnemyDirection,
+		noisyObjectiveDirection = self.noisyObjectiveDirection,
 		sightedEnemyLocs = self.sightedEnemyLocs,
 		sightedObjectiveLocs = self.sightedObjectiveLocs,
 		sightedCrouchCoverLocs = self.sightedCrouchCoverLocs,
 		sightedProneCoverLocs = self.sightedProneCoverLocs,
 		behaviourState = self.behaviourState,
-		RequestChangeBehaviour = self.requestChangeBehaviour,
-		RequestReplan = self.requestReplan,
-	} :: Types.AgentActionData
+		RequestChangeBehaviour = function(request: Types.BehaviourState)
+			requestChangeBehaviour(self, request)
+		end,
+		RequestReplan = function(reason: string)
+			requestReplan(self, reason)
+		end,
+		RequestMagazine = function(): boolean
+			return requestMagazine(self)
+		end,
+	} :: Types.AgentSharedData
 end
 
-local function constructBeliefs(self: AgentData): ()
+local function constructBeliefs(self: Agent): { [string]: boolean }
 	local stance = self.controller:GetStance()
 
-	local standing = stance == Enums.Posture.Standing
-	local crouched = stance == Enums.Posture.Crouching
-	local proned = stance == Enums.Posture.Proning
+	local standing = stance == "Standing"
+	local crouched = stance == "Crouching"
+	local proned = stance == "Proning"
 	local enemyVisible = #self.sightedEnemyLocs > 0
 
 	local health = self.controller:GetHumanoid().Health
@@ -103,13 +98,13 @@ local function constructBeliefs(self: AgentData): ()
 
 	local ammo, _ = self.controller:GetAmmo()
 
-	self.plannerState.beliefs = {
+	return {
 		objectiveCaptured = false,
 		crouchCoverInRange = #self.sightedCrouchCoverLocs > 0,
 		lowHealth = lowHealth,
 		hasObjectivePos = #self.sightedObjectiveLocs > 0,
-		inCrouchCover = crouched,
-		inProneCover = proned,
+		inCrouchCover = false,
+		inProneCover = false,
 		proneCoverInRange = #self.sightedProneCoverLocs > 0,
 		hasAmmo = ammo > 0,
 		inDanger = enemyVisible and lowHealth,
@@ -117,86 +112,15 @@ local function constructBeliefs(self: AgentData): ()
 		crouched = crouched,
 		proned = proned,
 		hasEnemyPos = enemyVisible,
-		enemyEngaged = self.behaviourState.behaviour == Enums.Behaviour.EngagingEnemy,
+		enemyEngaged = self.behaviourState.behaviour == "EngagingEnemy",
 	}
 end
 
-local function makePlan(self: AgentData): ()
-	local previousAction = self.plannerState.goapAction
-	if previousAction then
-		previousAction.End(self.controller, self.agentActionData)
-	end
-
-	local planData = GOAPPlanner.MakePlan(self.plannerState.beliefs, self.Actions)
-	self.plannerState.planSuccess = planData.success
-
-	if not planData.success or #planData.plan == 0 then
-		self.plannerState.plan = createEmptyPlan()
-		self.plannerState.goal = nil
-		self.plannerState.goapAction = nil
-		self.plannerState.lastFailedPlanAt = os.clock()
-		return
-	end
-
-	self.plannerState.plan = planData.plan
-	self.plannerState.planIndx = 1
-	self.plannerState.goal = planData.goal
-	local firstAction = self.plannerState.plan[1]
-	if not firstAction then
-		self.plannerState.planSuccess = false
-		self.plannerState.lastFailedPlanAt = os.clock()
-		return
-	end
-	self.plannerState.goapAction = firstAction
-	firstAction.Start(self.controller, self.agentActionData)
-end
-
-local function handleGOAPAction(self: AgentData, dt: number): ()
-	local goapAction = self.plannerState.goapAction
-	if not goapAction then
-		self.requestReplan("GOAPAction missing")
-		return
-	end
-
-	if goapAction.FinishedCheck(self.controller, self.agentActionData) then
-		goapAction.End(self.controller, self.agentActionData)
-		self.plannerState.planIndx += 1
-		self.plannerState.goapAction = self.plannerState.plan[self.plannerState.planIndx]
-
-		local nextAction = self.plannerState.goapAction
-		if nextAction then
-			nextAction.Start(self.controller, self.agentActionData)
-		else
-			self.requestReplan("Plan finished")
-		end
-		return
-	end
-
-	goapAction.Update(self.controller, self.agentActionData, dt)
-end
-
-local function updatePlanner(self: AgentData, dt: number): ()
-	if not self.needsReplan then
-		handleGOAPAction(self, dt)
-		return
-	end
-
-	if os.clock() - self.plannerState.lastFailedPlanAt < self.plannerState.failedPlanCooldown then
-		return
-	end
-
-	constructBeliefs(self)
-	makePlan(self)
-	if self.plannerState.planSuccess then
-		self.needsReplan = false
-	end
-end
-
-function Agent.Update(self: AgentData, dt: number): ()
+function Agent.Update(self: Agent, dt: number): ()
 	self.visionElapsed += dt
-	if self.visionElapsed >= self.cadence.VisionInterval then
+	if self.visionElapsed >= self.cadenceConfig.VisionInterval then
 		self.visionElapsed = 0
-		self.visionSensor:Sense()
+		self.vision:Sense()
 	end
 
 	local health = self.controller:GetHumanoid().Health
@@ -205,116 +129,102 @@ function Agent.Update(self: AgentData, dt: number): ()
 		return
 	end
 
-	self.agentActionData = getActionData(self) -- Update once
-
 	self.plannerElapsed += dt
-	if self.plannerElapsed >= self.cadence.PlannerInterval then
+	if self.plannerElapsed >= self.cadenceConfig.PlannerInterval then
+		local agentSharedData = getSharedData(self)
+		local beliefs = constructBeliefs(self)
+
 		local plannerDelta = self.plannerElapsed
 		self.plannerElapsed = 0
-		updatePlanner(self, plannerDelta)
+		self.planner:Update(beliefs, agentSharedData, plannerDelta)
 	end
 end
 
-function Agent.Start(self: AgentData): ()
-	if self.ended or self.heartBeat then
+function Agent.Start(self: Agent): ()
+	if self.active or self.ended then
 		return
 	end
+	self.active = true
+
+	self.planner:Awake(self.controller)
+	self.vision:Awake()
 
 	self.heartBeat = RunService.Heartbeat:Connect(function(dt: number): ()
 		Agent.Update(self, dt)
 	end)
 end
 
-function Agent.End(self: AgentData): ()
+function Agent.End(self: Agent): ()
 	if self.ended then
 		return
 	end
+
+	self.active = false
 	self.ended = true
-	local heartBeat = self.heartBeat
-	self.heartBeat = nil
-	if heartBeat then
-		heartBeat:Disconnect()
+
+	if self.heartBeat then
+		self.heartBeat:Disconnect()
+		self.heartBeat = nil
 	end
 
-	local goapAction = self.plannerState.goapAction
-	if goapAction then
-		goapAction.End(self.controller, self.agentActionData)
-		self.plannerState.goapAction = nil
-	end
+	self.planner:ForceStop(getSharedData(self))
+	self.controller:Destroy()
 end
 
 export type Agent = typeof(setmetatable({} :: AgentData, Agent))
 
-function Agent.new(params: {
+function Agent.new(
 	id: number,
-	magazines: number,
-	fovX: number,
-	fovY: number,
-	visionDistance: number,
-	failedPlanCooldown: number?,
+	teamId: Team.Id,
 	controller: SPHController.SPHController,
-	cadence: typeof(_DefaultCadenceConfig),
-}): Agent
-	local inventory = InventoryModule.new(params.magazines)
-	local data: AgentData = {
-		id = params.id,
+	agentConfig: typeof(_DefaultAgentConfig),
+	cadenceConfig: typeof(_DefaultCadenceConfig),
+	visionDependencies: VisionSensor.Dependencies
+): Agent
+	assert(teamId ~= "", "Agent teamId must not be empty")
+	assert(controller:GetTeamId() == teamId, "Agent teamId must match its SPHController teamId")
+	local agentData: AgentData = {
+		id = id,
+		teamId = teamId,
+
+		agentConfig = agentConfig,
+		cadenceConfig = cadenceConfig,
+
+		noisyEnemyDirection = Vector3.zero,
+		noisyObjectiveDirection = Vector3.zero,
 		sightedEnemyLocs = {},
 		sightedObjectiveLocs = {},
 		sightedCrouchCoverLocs = {},
 		sightedProneCoverLocs = {},
 
 		behaviourState = {
-			behaviour = Enums.Behaviour.None,
+			behaviour = "None",
 			behaviourParams = nil,
-		},
+		} :: Types.BehaviourState,
 		behaviourRequest = nil,
-		requestChangeBehaviour = function(_request: Types.BehaviourState): () end,
-		requestReplan = function(_message: string): () end,
 
-		Actions = {} :: ActionRegistry.ActionSet,
-		agentActionData = {} :: Types.AgentActionData,
-
-		needsReplan = true,
-		plannerState = {
-			plan = createEmptyPlan(),
-			goal = nil,
-			beliefs = {},
-			goapAction = nil,
-			planIndx = 1,
-			planSuccess = false,
-			lastFailedPlanAt = -math.huge,
-			failedPlanCooldown = params.failedPlanCooldown or 0.5,
-		},
-
-		controller = params.controller,
-		visionSensor = VisionSensor.blank(),
-		inventoryModule = inventory,
+		controller = controller,
+		vision = VisionSensor.Blank,
+		inventory = InventoryModule.New(agentConfig.InitialMagazines),
+		planner = PlannerModule.new(),
 
 		heartBeat = nil,
-		cadence = params.cadence,
-		visionElapsed = params.cadence.VisionInterval,
-		plannerElapsed = params.cadence.PlannerInterval,
+		visionElapsed = cadenceConfig.VisionInterval,
+		plannerElapsed = cadenceConfig.PlannerInterval,
 
+		active = false,
 		ended = false,
-
-		startRuntime = function(): () end,
-		endRuntime = function(): () end,
 	}
-	data.requestChangeBehaviour = function(request: Types.BehaviourState): ()
-		Agent.RequestChangeBehaviour(data, request)
-	end
-	data.startRuntime = function(): ()
-		Agent.Start(data)
-	end
-	data.endRuntime = function(): ()
-		Agent.End(data)
-	end
-	data.Actions = ActionRegistry.new()
 
-	data.visionSensor =
-		VisionSensor.new(data, data.id, data.controller:GetModel(), params.fovX, params.fovY, params.visionDistance)
+	agentData.vision = VisionSensor.New(
+		agentData,
+		agentData.id,
+		agentData.controller:GetModel(),
+		agentConfig.VisionDistance,
+		visionDependencies
+	)
 
-	return setmetatable(data, Agent)
+	return setmetatable(agentData, Agent)
 end
 
 return Agent

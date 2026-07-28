@@ -2,7 +2,7 @@
 
 return {
 	id = "CaptureObjective",
-	priority = 25,
+	priority = 1,
 	activation = {
 		hasObjectivePos = true,
 	},

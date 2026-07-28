@@ -2,15 +2,15 @@
 
 local NoobPathConfig = {
 	Enabled = true,
-	Precise = true,
-	Timeout = true,
-	Visualize = false,
+	Precise = false,
+	Timeout = false,
+	Visualize = true,
 	AgentParams = {
 		AgentRadius = 3,
 		AgentHeight = 5,
-		AgentCanJump = true,
-		AgentCanClimb = true,
-		WaypointSpacing = 4,
+		AgentCanJump = false,
+		AgentCanClimb = false,
+		WaypointSpacing = 12,
 		Costs = {},
 		PathSettings = {
 			SupportPartialPath = true,

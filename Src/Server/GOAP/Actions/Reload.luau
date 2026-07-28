@@ -5,15 +5,28 @@ local CompyServerScripts = ServerScriptService.CompyAgent
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local Types = require(CompyServerScripts.Core.Types)
 
-local function Start(controller: SPHController.SPHController, data: Types.AgentActionData): () end
-
-local function Update(controller: SPHController.SPHController, data: Types.AgentActionData, _dt: number): () end
-
-local function FinishedCheck(controller: SPHController.SPHController, data: Types.AgentActionData): boolean
-	return false
+local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, _: Types.AgentSharedData): ()
+	task.defer(function()
+		controller
+			:Reload()
+			:andThen(function(success: boolean): ()
+				if success then
+					actionData.reloadCompleted = true
+				end
+			end)
+			:catch(function(reason): ()
+				warn("[ ReloadAction ] Reload Failed:", reason)
+			end)
+	end)
 end
 
-local function End(controller: SPHController.SPHController, data: Types.AgentActionData): () end
+local function FinishedCheck(actionData: { [any]: any }, _: SPHController.SPHController, _: Types.AgentSharedData): boolean
+	return actionData.reloadCompleted
+end
+
+local function End(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
+	table.remove(actionData)
+end
 
 local Action = {}
 
@@ -27,10 +40,13 @@ function Action.new(): Types.Action
 		effects = {
 			hasAmmo = true,
 		},
+		actionData = {
+			reloadCompleted = false,
+		},
 		Start = Start,
-		Update = Update,
+		Update = nil,
 		FinishedCheck = FinishedCheck,
-		End = End,
+		End = nil,
 	}
 end
 

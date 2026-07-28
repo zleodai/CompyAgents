@@ -2,7 +2,7 @@
 
 return {
 	id = "Survive",
-	priority = 100,
+	priority = 3,
 	activation = {
 		lowHealth = true,
 	},

@@ -14,53 +14,25 @@ local TakeProneCover = require(CompyServerScripts.GOAP.Actions.TakeProneCover)
 local StandFromCrouchCover = require(CompyServerScripts.GOAP.Actions.StandFromCrouchCover)
 local CrouchFromProneCover = require(CompyServerScripts.GOAP.Actions.CrouchFromProneCover)
 
-local ACTION_ORDER = {
-	"FindEnemyLocation",
-	"EngageEnemy",
-	"Reload",
-	"FindObjective",
-	"CaptureObjective",
-	"TakeCrouchCover",
-	"TakeProneCover",
-	"StandFromCrouchCover",
-	"CrouchFromProneCover",
-}
+local Actions = {}
 
-local Actions = {
-	FindEnemyLocation = FindEnemyLocation,
-	EngageEnemy = EngageEnemy,
-	Reload = Reload,
-	FindObjective = FindObjective,
-	CaptureObjective = CaptureObjective,
-	TakeCrouchCover = TakeCrouchCover,
-	TakeProneCover = TakeProneCover,
-	StandFromCrouchCover = StandFromCrouchCover,
-	CrouchFromProneCover = CrouchFromProneCover,
-}
-
-export type Action = Types.Action
-export type ActionSet = { [string]: Types.Action }
-export type ActionList = { Types.Action }
-
-function Actions.new(): ActionSet
+function Actions.New(): { [string]: Types.Action }
 	return {
 		["FindEnemyLocation"] = FindEnemyLocation.new(),
 		["EngageEnemy"] = EngageEnemy.new(),
 		["Reload"] = Reload.new(),
-		["FindObjective"] = FindObjective.new(),
-		["CaptureObjective"] = CaptureObjective.new(),
-		["TakeCrouchCover"] = TakeCrouchCover.new(),
-		["TakeProneCover"] = TakeProneCover.new(),
-		["StandFromCrouchCover"] = StandFromCrouchCover.new(),
-		["CrouchFromProneCover"] = CrouchFromProneCover.new(),
+		-- ["FindObjective"] = FindObjective.new(),
+		-- ["CaptureObjective"] = CaptureObjective.new(),
+		-- ["TakeCrouchCover"] = TakeCrouchCover.new(),
+		-- ["TakeProneCover"] = TakeProneCover.new(),
+		-- ["StandFromCrouchCover"] = StandFromCrouchCover.new(),
+		-- ["CrouchFromProneCover"] = CrouchFromProneCover.new(),
 	}
 end
 
-function Actions.ToArray(instances: ActionSet): ActionList
-	local ordered: ActionList = {}
-	for _, actionName in ipairs(ACTION_ORDER) do
-		local action = instances[actionName]
-		assert(action, `Types.Action set is missing {actionName}`)
+function Actions.ToArray(instances: { [string]: Types.Action }): { Types.Action }
+	local ordered: { Types.Action } = {}
+	for _, action in pairs(instances) do
 		table.insert(ordered, action)
 	end
 	return ordered

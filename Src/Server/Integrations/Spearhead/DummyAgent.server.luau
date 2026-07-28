@@ -43,8 +43,7 @@ local function configureWaypointCollider(waypoint: BasePart): ()
 	waypoint.CanCollide = true
 	waypoint.CanTouch = true
 	waypoint.CanQuery = true
-	waypoint.Size =
-		Vector3.new(math.max(waypoint.Size.X, 4), math.max(waypoint.Size.Y, 0.5), math.max(waypoint.Size.Z, 4))
+	waypoint.Size = Vector3.new(math.max(waypoint.Size.X, 4), math.max(waypoint.Size.Y, 0.5), math.max(waypoint.Size.Z, 4))
 	waypoint:SetAttribute("SPHArrivalCollider", true)
 end
 
@@ -82,13 +81,19 @@ local function setupKillWatch(
 	targetContrs: { SPHController.SPHController },
 	a: BasePart,
 	b: BasePart,
-	agentFactory: SPHAgentFactory.SPHAgentFactory
+	agentFactory: SPHAgentFactory.SPHAgentFactory?,
+	controller: SPHController.SPHController?
 ): ()
-	local guardController = agentFactory:Create(
-		`guard{prefix}`,
-		CFrame.new(a.Position + Vector3.new(0, 3, 0), b.Position),
-		{ speedMult = 0.9 }
-	)
+	local guardController = controller
+
+	if agentFactory then
+		guardController = agentFactory:Create(`guard{prefix}`, CFrame.new(a.Position + Vector3.new(0, 3, 0), b.Position))
+	end
+
+	if not guardController then
+		return
+	end
+
 	setupDeathDisconnect(guardController)
 
 	task.defer(function()
@@ -102,6 +107,10 @@ local function setupKillWatch(
 			local targetDummy = humanoid.Parent
 			targetDummies[indx] = targetDummy
 		end
+
+		task.defer(function()
+			guardController:MoveTo(b, "ProneWalk")
+		end)
 
 		while #targetContrs > 0 do
 			local contrIndxToRemove = {}
@@ -144,8 +153,7 @@ local function setupKillWatch(
 			aimCastParams.FilterDescendantsInstances = { guardDummy }
 			aimCastParams.FilterType = Enum.RaycastFilterType.Exclude
 
-			local aimCast =
-				Workspace:Raycast(guardHead.Position, targetHead.Position - guardHead.Position, aimCastParams)
+			local aimCast = Workspace:Raycast(guardHead.Position, targetHead.Position - guardHead.Position, aimCastParams)
 			local hitCharacter = if aimCast then aimCast.Instance:FindFirstAncestorOfClass("Model") else nil
 			if not table.find(targetDummies, hitCharacter) then
 				task.wait(0.1)
@@ -192,7 +200,7 @@ local function setupKillWatch(
 					return false
 				end
 
-				guardController:MoveTo(b, "CrouchWalk")
+				return guardController:SetStance("Standing")
 			end)
 			:catch(function(reason): ()
 				warn("ClearAim/Unequip/Moveto failed:", reason)
@@ -200,18 +208,16 @@ local function setupKillWatch(
 	end)
 end
 
-local function setupPatrolBots(
-	prefix: string,
-	amount: number,
-	a: BasePart,
-	b: BasePart,
-	factory: SPHAgentFactory.SPHAgentFactory
-): { SPHController.SPHController }
+local function setupPatrolBots(prefix: string, amount: number, a: BasePart, b: BasePart, factory: SPHAgentFactory.SPHAgentFactory): { SPHController.SPHController }
 	local bots = {}
 
 	for i = 1, amount do
-		local contr =
-			factory:Create(`PatrolAgent{prefix}{i}`, CFrame.new(a.Position + Vector3.new(0, 3, 0), b.Position))
+		local pivotDist = 0
+		local spawnPivot = Vector3.new(math.random(-pivotDist, pivotDist), 3, math.random(-pivotDist, pivotDist))
+
+		local location = CFrame.new(a.Position + spawnPivot, b.Position)
+
+		local contr = factory:Create(`PatrolAgent{prefix}{i}`, location)
 
 		setupDeathDisconnect(contr)
 		setupPatrol(contr, a, b)
@@ -222,19 +228,34 @@ local function setupPatrolBots(
 	return bots
 end
 
-configureWaypointCollider(waypointA)
-configureWaypointCollider(waypointB)
-configureWaypointCollider(waypointC)
-configureWaypointCollider(waypointD)
+-- configureWaypointCollider(waypointA)
+-- configureWaypointCollider(waypointB)
+-- configureWaypointCollider(waypointC)
+-- configureWaypointCollider(waypointD)
 
-local agentFactory = SPHAgentFactory.new({
-	maxHealth = 80,
-	controllerConfig = {
-		weaponName = "AKM",
-		moveTimeout = 30,
-	},
-})
+-- local agentFactoryA = SPHAgentFactory.new({
+-- 	teamId = "Blue",
+-- 	maxHealth = 80,
+-- 	controllerConfig = {
+-- 		modelNames = { "Doge", "Dak", "Elite", "Jammer", "Untold" },
+-- 		weaponName = "AKM",
+-- 		moveTimeout = 30,
+-- 	},
+-- })
 
-local patrolBots = setupPatrolBots("A", 5, waypointA, waypointB, agentFactory)
+-- local agentFactoryB = SPHAgentFactory.new({
+-- 	teamId = "Red",
+-- 	maxHealth = 80,
+-- 	controllerConfig = {
+-- 		modelNames = { "Doge", "Dak", "Elite", "Jammer", "Untold" },
+-- 		weaponName = "AKM",
+-- 		moveTimeout = 30,
+-- 	},
+-- })
 
-setupKillWatch("A", patrolBots, waypointC, waypointD, agentFactory)
+-- -- local patrolBots = setupPatrolBots("A", 1, waypointA, waypointB, agentFactoryA)
+
+-- local agentA = agentFactoryA:Create("AgentA", CFrame.new(waypointA.Position + Vector3.new(0, 3, 0), waypointB.Position))
+-- local agentB = agentFactoryB:Create("AgentB", CFrame.new(waypointC.Position + Vector3.new(0, 3, 0), waypointD.Position))
+-- setupKillWatch("A", { agentA }, waypointC, waypointD, nil, agentB)
+-- setupKillWatch("A", { agentB }, waypointA, waypointB, nil, agentA)

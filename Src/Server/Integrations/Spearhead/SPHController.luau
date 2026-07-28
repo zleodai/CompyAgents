@@ -13,6 +13,7 @@ local CompySharedScripts = ReplicatedStorage.CompyAgent
 local NoobPath = require(ReplicatedStorage.Packages.NoobPath)
 local Promise = require(CompySharedScripts.Promise)
 local DefaultNoobPathConfig = require(CompySharedScripts.Config.NoobPathConfig)
+local Team = require(CompySharedScripts.Team)
 
 local SPHController = {}
 SPHController.__index = SPHController
@@ -39,6 +40,7 @@ export type AnimationNames = {
 }
 
 export type Config = {
+	modelNames: { string }?,
 	weaponName: string?,
 	magazineCapacity: number?,
 	reserveAmmo: number?,
@@ -69,11 +71,14 @@ export type Config = {
 type NumericTable = { [string]: unknown }
 
 type ControllerData = {
+	teamId: Team.Id,
 	character: Model,
 	humanoid: Humanoid,
 	model: Model,
 	animator: Animator,
 	rootPart: BasePart,
+	aimAttachment: Attachment,
+	aimOrientation: AlignOrientation,
 	head: BasePart,
 	torso: BasePart,
 	neckJoint: Motor6D?,
@@ -136,13 +141,14 @@ type ControllerData = {
 	activeWeaponTrack: AnimationTrack?,
 	weaponIdleTrack: AnimationTrack?,
 	aimTarget: Vector3?,
-	stance: Enums.Posture,
+	stance: Enums.Posture?,
 	gait: Enums.Movement?,
 	nextShotAt: number,
 	reloading: boolean,
 	equipped: boolean,
 	destroyed: boolean,
 	moveSerial: number,
+	activeMoveSerial: number?,
 	runPath: (Vector3) -> (),
 	stopPath: () -> (),
 	destroyPath: () -> (),
@@ -171,6 +177,32 @@ local RIFLE_DEFAULT_ANIMATIONS: AnimationNames = {
 
 local DEFAULT_R6_WALK_ANIMATION = "rbxassetid://180426354"
 local POSE_BLEND_TIME = 0.15
+
+local function getMovementSpeed(self: SPHController, gait: Enums.Movement): number
+	local speed: number
+	if gait == "Sprint" then
+		speed = self.sprintSpeed
+	elseif gait == "CrouchWalk" then
+		speed = self.crouchSpeed
+	elseif gait == "ProneWalk" then
+		speed = self.proneSpeed
+	else
+		assert(gait == "Walk", `Invalid gait {gait}`)
+		speed = self.walkSpeed
+	end
+	return speed * self.speedMult
+end
+
+local function getGaitForStance(currentGait: Enums.Movement, stance: Enums.Posture): Enums.Movement
+	if stance == "Crouching" then
+		return "CrouchWalk"
+	elseif stance == "Proning" then
+		return "ProneWalk"
+	elseif currentGait == "Sprint" then
+		return "Sprint"
+	end
+	return "Walk"
+end
 
 local function mergeAnimationNames(overrides: AnimationNames?): AnimationNames
 	local merged = table.clone(RIFLE_DEFAULT_ANIMATIONS)
@@ -337,10 +369,7 @@ local function containsName(names: { string }, name: string): boolean
 end
 
 local function prepareWeaponModel(model: Model, animatedParts: { string }): BasePart
-	local grip = model.PrimaryPart
-		or model:FindFirstChild("Grip")
-		or model:FindFirstChild("Middle")
-		or model:FindFirstChildWhichIsA("BasePart")
+	local grip = model.PrimaryPart or model:FindFirstChild("Grip") or model:FindFirstChild("Middle") or model:FindFirstChildWhichIsA("BasePart")
 	assert(grip and grip:IsA("BasePart"), `{model:GetFullName()} is missing an attachment BasePart`)
 	model.PrimaryPart = grip
 
@@ -349,7 +378,7 @@ local function prepareWeaponModel(model: Model, animatedParts: { string }): Base
 			descendant.Anchored = false
 			descendant.CanCollide = false
 			descendant.CanTouch = false
-			descendant.CanQuery = true
+			descendant.CanQuery = false
 			descendant.Massless = true
 		end
 	end
@@ -405,13 +434,54 @@ local function createRigJoint(animBase: BasePart, arm: BasePart, name: string, x
 	return motor
 end
 
-local function createWeaponRig(
-	character: Model,
-	assets: Instance,
-	head: BasePart,
-	characterRightArm: BasePart,
-	characterLeftArm: BasePart
-): (Model, Animator, BasePart, Motor6D)
+local function copyArmAppearance(sourceArm: BasePart, rigArm: BasePart): ()
+	rigArm.Color = sourceArm.Color
+	rigArm.Material = sourceArm.Material
+	rigArm.MaterialVariant = sourceArm.MaterialVariant
+	rigArm.Reflectance = sourceArm.Reflectance
+	rigArm.CastShadow = sourceArm.CastShadow
+
+	for _, child in sourceArm:GetChildren() do
+		if child:IsA("Decal") or child:IsA("Texture") or child:IsA("SurfaceAppearance") or child:IsA("SpecialMesh") then
+			child:Clone().Parent = rigArm
+		end
+	end
+end
+
+local function applyRigClothing(character: Model, rig: Model): Humanoid?
+	local shirt = character:FindFirstChildOfClass("Shirt")
+	local characterMeshes = {}
+	for _, child in character:GetChildren() do
+		if child:IsA("CharacterMesh") then
+			table.insert(characterMeshes, child)
+		end
+	end
+	if not shirt and #characterMeshes == 0 then
+		return nil
+	end
+
+	-- Classic R6 clothing is rendered by a Humanoid; a Shirt alone on the
+	-- auxiliary animation rig does not project its sleeves onto the rig arms.
+	local appearanceHumanoid = Instance.new("Humanoid")
+	appearanceHumanoid.Name = "SPHControllerAppearanceHumanoid"
+	appearanceHumanoid.AutoRotate = false
+	appearanceHumanoid.BreakJointsOnDeath = false
+	appearanceHumanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	appearanceHumanoid.EvaluateStateMachine = false
+	appearanceHumanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	appearanceHumanoid.RequiresNeck = false
+	appearanceHumanoid.Parent = rig
+
+	if shirt then
+		shirt:Clone().Parent = rig
+	end
+	for _, characterMesh in characterMeshes do
+		characterMesh:Clone().Parent = rig
+	end
+	return appearanceHumanoid
+end
+
+local function createWeaponRig(character: Model, assets: Instance, head: BasePart, characterRightArm: BasePart, characterLeftArm: BasePart): (Model, Animator, BasePart, Motor6D)
 	local arms = requireChild(assets, "Arms", "Folder")
 	local r6Arms = requireChild(arms, "R6_Arms", "Instance")
 	local template = requireChild(r6Arms, "WeaponRig", "Model") :: Model
@@ -430,25 +500,34 @@ local function createWeaponRig(
 			descendant.Massless = true
 		end
 	end
-	rightArm.Color = characterRightArm.Color
-	rightArm.Material = characterRightArm.Material
+	copyArmAppearance(characterRightArm, rightArm)
 	rightArm.Transparency = 1
-	leftArm.Color = characterLeftArm.Color
-	leftArm.Material = characterLeftArm.Material
+	copyArmAppearance(characterLeftArm, leftArm)
 	leftArm.Transparency = 1
 	animBase.Transparency = 1
+	local appearanceHumanoid = applyRigClothing(character, rig)
 	createRigJoint(animBase, rightArm, "RightJoint", 1)
 	createRigJoint(animBase, leftArm, "LeftJoint", -1)
 
-	local animationController = rig:FindFirstChildOfClass("AnimationController")
-	if not animationController then
-		animationController = Instance.new("AnimationController")
-		animationController.Parent = rig
+	local animationOwner: Humanoid | AnimationController
+	if appearanceHumanoid then
+		local oldAnimationController = rig:FindFirstChildOfClass("AnimationController")
+		if oldAnimationController then
+			oldAnimationController:Destroy()
+		end
+		animationOwner = appearanceHumanoid
+	else
+		local animationController = rig:FindFirstChildOfClass("AnimationController")
+		if not animationController then
+			animationController = Instance.new("AnimationController")
+			animationController.Parent = rig
+		end
+		animationOwner = animationController
 	end
-	local animator = animationController:FindFirstChildOfClass("Animator")
+	local animator = animationOwner:FindFirstChildOfClass("Animator")
 	if not animator then
 		animator = Instance.new("Animator")
-		animator.Parent = animationController
+		animator.Parent = animationOwner
 	end
 	if not rig:FindFirstChild("Weapon") then
 		local weaponFolder = Instance.new("Folder")
@@ -520,6 +599,11 @@ local function configureInventoryTool(tool: Tool): ()
 	for _, descendant in ipairs(tool:GetDescendants()) do
 		if descendant:IsA("BaseScript") then
 			descendant.Enabled = false
+		elseif descendant:IsA("BasePart") then
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+			descendant.Massless = true
 		end
 	end
 	tool.CanBeDropped = false
@@ -580,11 +664,7 @@ local function runAsyncAction(operation: () -> (boolean, number), shouldAbort: (
 	end)
 end
 
-local function waitForTrackCompletion(
-	track: AnimationTrack,
-	fallbackDuration: number,
-	isCancelled: () -> boolean
-): boolean
+local function waitForTrackCompletion(track: AnimationTrack, fallbackDuration: number, isCancelled: () -> boolean): boolean
 	local ended = false
 	local endedConnection = track.Ended:Connect(function(): ()
 		ended = true
@@ -625,12 +705,7 @@ local function waitForTrackCompletion(
 	return not isCancelled()
 end
 
-local function waitForTrackWeight(
-	track: AnimationTrack,
-	targetWeight: number,
-	transitionTime: number,
-	isCancelled: () -> boolean
-): boolean
+local function waitForTrackWeight(track: AnimationTrack, targetWeight: number, transitionTime: number, isCancelled: () -> boolean): boolean
 	local startedAt = os.clock()
 	local timeout = math.max(transitionTime, 0.05) + 1
 	while os.clock() - startedAt < timeout do
@@ -649,26 +724,19 @@ local function waitForTrackWeight(
 	return false
 end
 
-local function lerpRootFacing(
-	self: SPHController,
-	targetPosition: Vector3,
-	transitionTime: number,
-	isCancelled: () -> boolean
-): boolean
+local function lerpRootFacing(self: SPHController, targetPosition: Vector3, transitionTime: number, isCancelled: () -> boolean): boolean
 	local startLook = self.rootPart.CFrame.LookVector
 	local flatStartLook = Vector3.new(startLook.X, 0, startLook.Z)
-	local startRotation = if flatStartLook.Magnitude > 0.001
-		then CFrame.lookAt(Vector3.zero, flatStartLook).Rotation
-		else self.rootPart.CFrame.Rotation
+	local startRotation = if flatStartLook.Magnitude > 0.001 then CFrame.lookAt(Vector3.zero, flatStartLook).Rotation else self.rootPart.CFrame.Rotation
 	local initialRootPosition = self.rootPart.Position
-	local initialFlatDirection =
-		Vector3.new(targetPosition.X - initialRootPosition.X, 0, targetPosition.Z - initialRootPosition.Z)
+	local initialFlatDirection = Vector3.new(targetPosition.X - initialRootPosition.X, 0, targetPosition.Z - initialRootPosition.Z)
+	self.aimOrientation.Enabled = true
 	if initialFlatDirection.Magnitude <= 0.001 then
+		self.aimOrientation.CFrame = startRotation
 		return true
 	end
 	if flatStartLook.Magnitude > 0.001 and flatStartLook.Unit:Dot(initialFlatDirection.Unit) >= 0.9999 then
-		self.rootPart.CFrame = CFrame.new(initialRootPosition)
-			* CFrame.lookAt(Vector3.zero, initialFlatDirection).Rotation
+		self.aimOrientation.CFrame = CFrame.lookAt(Vector3.zero, initialFlatDirection).Rotation
 		return true
 	end
 	local startedAt = os.clock()
@@ -683,7 +751,9 @@ local function lerpRootFacing(
 		local flatDirection = Vector3.new(targetPosition.X - rootPosition.X, 0, targetPosition.Z - rootPosition.Z)
 		if flatDirection.Magnitude > 0.001 then
 			local targetRotation = CFrame.lookAt(Vector3.zero, flatDirection).Rotation
-			self.rootPart.CFrame = CFrame.new(rootPosition) * startRotation:Lerp(targetRotation, alpha)
+			-- AlignOrientation owns only rotation. Humanoid and NoobPath remain the
+			-- sole owners of root translation, so aiming cannot pin a moving agent.
+			self.aimOrientation.CFrame = startRotation:Lerp(targetRotation, alpha)
 		end
 
 		if alpha >= 1 then
@@ -818,9 +888,7 @@ function SPHController._loadTrack(
 		return existing
 	end
 
-	local animation = if animationName == "DefaultR6Walk"
-		then self.walkAnimation
-		else findAnimation(self.animations, animationName)
+	local animation = if animationName == "DefaultR6Walk" then self.walkAnimation else findAnimation(self.animations, animationName)
 	if not animation then
 		warn(`[SPHController] Missing SPH animation {animationName}`)
 		return nil
@@ -849,13 +917,7 @@ function SPHController._playWeaponAnimation(
 	speed: number?
 ): AnimationTrack?
 	stopTrack(self.activeWeaponTrack, fadeTime)
-	local track = self:_loadTrack(
-		self.weaponAnimator,
-		self.weaponTracks,
-		animationName,
-		priority or Enum.AnimationPriority.Action,
-		looped == true
-	)
+	local track = self:_loadTrack(self.weaponAnimator, self.weaponTracks, animationName, priority or Enum.AnimationPriority.Action, looped == true)
 	self.activeWeaponTrack = track
 	if track then
 		track:Play(fadeTime or POSE_BLEND_TIME)
@@ -873,8 +935,7 @@ function SPHController._playWeaponIdle(self: SPHController, animationName: strin
 		self.weaponIdleTrack = nil
 	end
 
-	local track =
-		self:_loadTrack(self.weaponAnimator, self.weaponTracks, animationName, Enum.AnimationPriority.Idle, true)
+	local track = self:_loadTrack(self.weaponAnimator, self.weaponTracks, animationName, Enum.AnimationPriority.Idle, true)
 	self.weaponIdleTrack = track
 	if track and not track.IsPlaying then
 		track:Play(fadeTime or 0)
@@ -882,15 +943,9 @@ function SPHController._playWeaponIdle(self: SPHController, animationName: strin
 	return track
 end
 
-function SPHController._playMovementAnimation(
-	self: SPHController,
-	animationName: string?,
-	priority: Enum.AnimationPriority?,
-	speed: number?
-): ()
+function SPHController._playMovementAnimation(self: SPHController, animationName: string?, priority: Enum.AnimationPriority?, speed: number?): ()
 	stopTrack(self.activeMovementTrack)
-	local track =
-		self:_loadTrack(self.animator, self.tracks, animationName, priority or Enum.AnimationPriority.Movement, true)
+	local track = self:_loadTrack(self.animator, self.tracks, animationName, priority or Enum.AnimationPriority.Movement, true)
 	self.activeMovementTrack = track
 	if track then
 		track:Play(POSE_BLEND_TIME)
@@ -900,14 +955,9 @@ function SPHController._playMovementAnimation(
 	end
 end
 
-function SPHController._playStanceAnimation(
-	self: SPHController,
-	animationName: string?,
-	priority: Enum.AnimationPriority?
-): AnimationTrack?
+function SPHController._playStanceAnimation(self: SPHController, animationName: string?, priority: Enum.AnimationPriority?): AnimationTrack?
 	stopTrack(self.activeStanceTrack)
-	local track =
-		self:_loadTrack(self.animator, self.tracks, animationName, priority or Enum.AnimationPriority.Action, true)
+	local track = self:_loadTrack(self.animator, self.tracks, animationName, priority or Enum.AnimationPriority.Action, true)
 	self.activeStanceTrack = track
 	if track then
 		track:Play(POSE_BLEND_TIME)
@@ -926,8 +976,6 @@ function SPHController._playStanceIdle(self: SPHController): number
 		self:_playStanceAnimation(nil)
 	end
 	if self.equipped and not self.reloading then
-		stopTrack(self.activeWeaponTrack)
-		self.activeWeaponTrack = nil
 		self:_playWeaponIdle(self.animationNames.idle)
 	end
 	return POSE_BLEND_TIME
@@ -972,11 +1020,7 @@ function SPHController._updateHeadPose(self: SPHController): ()
 	local torsoDirection = self.torso.CFrame.LookVector
 	local cameraDirection = self.rootPart.CFrame:ToObjectSpace(lookDirection).LookVector
 	local rotationCFrame = CFrame.Angles(0, math.asin(math.clamp(cameraDirection.X, -1, 1)) / 1.15, 0)
-		* CFrame.Angles(
-			-math.asin(math.clamp(lookDirection.LookVector.Y, -1, 1)) + math.asin(math.clamp(torsoDirection.Y, -1, 1)),
-			0,
-			0
-		)
+		* CFrame.Angles(-math.asin(math.clamp(lookDirection.LookVector.Y, -1, 1)) + math.asin(math.clamp(torsoDirection.Y, -1, 1)), 0, 0)
 	neckJoint.C1 = CFrame.new(0, -0.5, 0) * rotationCFrame * CFrame.Angles(-math.rad(90), 0, math.rad(180))
 end
 
@@ -986,41 +1030,23 @@ function SPHController._playGaitAnimation(self: SPHController, gait: Enums.Movem
 		-- locomotion layer. CrouchMove and ProneMove do not provide a complete
 		-- upper-body pose by themselves.
 		self:_playStanceAnimation(self.animationNames.crouchIdle, Enum.AnimationPriority.Action)
-		self:_playMovementAnimation(
-			self.animationNames.crouchMove,
-			Enum.AnimationPriority.Action2,
-			self.humanoid.WalkSpeed / 6
-		)
+		self:_playMovementAnimation(self.animationNames.crouchMove, Enum.AnimationPriority.Action2, self.humanoid.WalkSpeed / 6)
 	elseif gait == "ProneWalk" then
 		self:_playStanceAnimation(self.animationNames.proneIdle, Enum.AnimationPriority.Action)
-		self:_playMovementAnimation(
-			self.animationNames.proneMove,
-			Enum.AnimationPriority.Action2,
-			self.humanoid.WalkSpeed / 6
-		)
+		self:_playMovementAnimation(self.animationNames.proneMove, Enum.AnimationPriority.Action2, self.humanoid.WalkSpeed / 6)
 	else
 		self:_playStanceAnimation(nil)
-		self:_playMovementAnimation(
-			"DefaultR6Walk",
-			Enum.AnimationPriority.Movement,
-			if gait == "Sprint" then 1.65 else 1
-		)
+		self:_playMovementAnimation("DefaultR6Walk", Enum.AnimationPriority.Movement, if gait == "Sprint" then 1.65 else 1)
 	end
 
 	if self.equipped then
 		self:_playWeaponIdle(self.animationNames.idle)
-		if gait == "Sprint" then
-			self:_playWeaponAnimation(self.animationNames.sprint, true, Enum.AnimationPriority.Movement)
-		elseif gait == "ProneWalk" then
-			-- Spearhead keeps the weapon rig on its idle loop while the humanoid
-			-- supplies the equipped prone crawl pose.
-			stopTrack(self.activeWeaponTrack)
-			self.activeWeaponTrack = nil
-			self:_playWeaponIdle(self.animationNames.weaponProneMove)
-		else
-			stopTrack(self.activeWeaponTrack)
-			self.activeWeaponTrack = nil
-			self:_playWeaponIdle(self.animationNames.idle)
+		local activeWeaponTrack = self.activeWeaponTrack
+		local weaponActionPlaying = activeWeaponTrack ~= nil
+			and activeWeaponTrack.IsPlaying
+			and activeWeaponTrack.Priority.Value >= Enum.AnimationPriority.Action.Value
+		if not weaponActionPlaying and not self.reloading then
+			self:_restoreWeaponLoop()
 		end
 	end
 end
@@ -1070,6 +1096,10 @@ function SPHController.GetHumanoid(self: SPHController): Humanoid
 	return self.humanoid
 end
 
+function SPHController.GetTeamId(self: SPHController): Team.Id
+	return self.teamId
+end
+
 function SPHController.GetHeadPart(self: SPHController): BasePart
 	return self.head
 end
@@ -1105,18 +1135,25 @@ end
 function SPHController._setStanceNow(self: SPHController, stance: Enums.Posture): number
 	assert(stance == "Standing" or stance == "Crouching" or stance == "Proning", `Invalid stance {stance}`)
 	self.stance = stance
-	self.gait = nil
 	self:_applyStanceHeight()
-	local transitionDuration = self:_playStanceIdle()
+	local gait = self.gait
+	local transitionDuration: number
+	if gait then
+		gait = getGaitForStance(gait, stance)
+		self.gait = gait
+		local speed = getMovementSpeed(self, gait)
+		self.humanoid.WalkSpeed = speed
+		self.setPathSpeed(speed)
+		self:_playGaitAnimation(gait)
+		transitionDuration = POSE_BLEND_TIME
+	else
+		transitionDuration = self:_playStanceIdle()
+	end
 	self:_setStateAttributes()
 	return transitionDuration
 end
 
-function SPHController._aimNow(
-	self: SPHController,
-	targetPosition: Vector3,
-	isCancelled: () -> boolean
-): (AnimationTrack?, boolean, number)
+function SPHController._aimNow(self: SPHController, targetPosition: Vector3, isCancelled: () -> boolean): (AnimationTrack?, boolean, number)
 	self.aimTarget = targetPosition
 	self.humanoid.AutoRotate = false
 	local transitionTime = self.aimTime / (4 * self.aimSpeed)
@@ -1126,8 +1163,7 @@ function SPHController._aimNow(
 	if self.animationNames.aim then
 		aimTrack = self.weaponTracks[self.animationNames.aim]
 		if not aimTrack or self.activeWeaponTrack ~= aimTrack or not aimTrack.IsPlaying then
-			aimTrack =
-				self:_playWeaponAnimation(self.animationNames.aim, true, Enum.AnimationPriority.Action, transitionTime)
+			aimTrack = self:_playWeaponAnimation(self.animationNames.aim, true, Enum.AnimationPriority.Action, transitionTime)
 		end
 	end
 
@@ -1136,6 +1172,7 @@ end
 
 function SPHController._clearAimNow(self: SPHController): (AnimationTrack?, number)
 	self.aimTarget = nil
+	self.aimOrientation.Enabled = false
 	self.humanoid.AutoRotate = true
 
 	local aimAnimationName = self.animationNames.aim
@@ -1145,7 +1182,7 @@ function SPHController._clearAimNow(self: SPHController): (AnimationTrack?, numb
 		stopTrack(aimTrack, transitionTime)
 		self.activeWeaponTrack = nil
 		if self.equipped and not self.reloading then
-			self:_playWeaponIdle(self.animationNames.idle)
+			self:_restoreWeaponLoop()
 		end
 		return aimTrack, transitionTime
 	end
@@ -1160,13 +1197,17 @@ function SPHController._restoreWeaponLoop(self: SPHController): ()
 	if self.aimTarget and self.animationNames.aim then
 		local aimTrack = self.weaponTracks[self.animationNames.aim]
 		if not aimTrack or self.activeWeaponTrack ~= aimTrack or not aimTrack.IsPlaying then
-			self:_playWeaponAnimation(
-				self.animationNames.aim,
-				true,
-				Enum.AnimationPriority.Action,
-				self.aimTime / (4 * self.aimSpeed)
-			)
+			self:_playWeaponAnimation(self.animationNames.aim, true, Enum.AnimationPriority.Action, self.aimTime / (4 * self.aimSpeed))
 		end
+	elseif self.gait == "Sprint" and self.animationNames.sprint then
+		local sprintTrack = self.weaponTracks[self.animationNames.sprint]
+		if not sprintTrack or self.activeWeaponTrack ~= sprintTrack or not sprintTrack.IsPlaying then
+			self:_playWeaponAnimation(self.animationNames.sprint, true, Enum.AnimationPriority.Movement)
+		end
+	elseif self.gait == "ProneWalk" then
+		stopTrack(self.activeWeaponTrack)
+		self.activeWeaponTrack = nil
+		self:_playWeaponIdle(self.animationNames.weaponProneMove)
 	else
 		stopTrack(self.activeWeaponTrack)
 		self.activeWeaponTrack = nil
@@ -1318,14 +1359,12 @@ function SPHController.Equip(self: SPHController, weaponName: string?): Promise.
 	return Promise.new(function(resolve, _reject, onCancel): ()
 		local cancelled = false
 		local track: AnimationTrack? = nil
-		if
-			onCancel(function(): ()
-				cancelled = true
-				if self.equipped then
-					self:_unequipNow()
-				end
-			end)
-		then
+		if onCancel(function(): ()
+			cancelled = true
+			if self.equipped then
+				self:_unequipNow()
+			end
+		end) then
 			return
 		end
 
@@ -1384,25 +1423,13 @@ function SPHController.Equip(self: SPHController, weaponName: string?): Promise.
 		self.equipped = true
 		self:_setStateAttributes()
 
-		track = self:_playWeaponAnimation(
-			self.animationNames.equip,
-			false,
-			Enum.AnimationPriority.Action2,
-			0,
-			self.equipSpeedModifier
-		)
+		track = self:_playWeaponAnimation(self.animationNames.equip, false, Enum.AnimationPriority.Action2, 0, self.equipSpeedModifier)
 		-- CharacterClient starts idle immediately underneath Action2 equip. Keeping
 		-- the stable loop alive removes the default-pose gap at the end of equip.
 		self:_playWeaponIdle(self.animationNames.idle, 0)
 		-- CharacterClient also preloads its aim track during equip. Loading it here
 		-- lets the later aim fade begin immediately instead of pausing on first use.
-		self:_loadTrack(
-			self.weaponAnimator,
-			self.weaponTracks,
-			self.animationNames.aim,
-			Enum.AnimationPriority.Action,
-			true
-		)
+		self:_loadTrack(self.weaponAnimator, self.weaponTracks, self.animationNames.aim, Enum.AnimationPriority.Action, true)
 		if track then
 			waitForWeaponPose(self, track, function(): boolean
 				return cancelled or self.destroyed or not self.equipped
@@ -1600,59 +1627,94 @@ function SPHController.SwitchFireMode(self: SPHController): Promise.Promise<bool
 	return self:_runWeaponAnimationAction(self.animationNames.switch)
 end
 
+local function runOwnedPath(self: SPHController, serial: number, destination: Vector3): boolean
+	if self.destroyed or self.activeMoveSerial ~= serial then
+		return false
+	end
+
+	self.runPath(destination)
+	if self.destroyed or self.activeMoveSerial ~= serial then
+		-- NoobPath.Run can yield while computing. If StopMoving cancelled this
+		-- operation during that yield, Run may resume and start travelling again.
+		-- Stop it a second time after the stale call returns.
+		if not self.destroyed and self.activeMoveSerial == nil then
+			self.stopPath()
+		end
+		return false
+	end
+	if self.terminalPathFailure ~= nil then
+		return false
+	end
+
+	return true
+end
+
+local function finishOwnedMovement(self: SPHController, serial: number): ()
+	if self.activeMoveSerial ~= serial then
+		return
+	end
+
+	self.activeMoveSerial = nil
+	self.stopPath()
+	self.gait = nil
+	self:_playStanceIdle()
+	self:_setStateAttributes()
+end
+
 function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePart, gait: Enums.Movement): boolean
 	if self.destroyed then
 		return false
 	end
 
-	self:_clearAimNow()
 	self.moveSerial += 1
 	local serial = self.moveSerial
-	local speed: number
+	self.activeMoveSerial = serial
 	if gait == "Sprint" then
 		self.stance = "Standing"
-		speed = self.sprintSpeed
 	elseif gait == "CrouchWalk" then
 		self.stance = "Crouching"
-		speed = self.crouchSpeed
 	elseif gait == "ProneWalk" then
 		self.stance = "Proning"
-		speed = self.proneSpeed
 	else
 		assert(gait == "Walk", `Invalid gait {gait}`)
 		self.stance = "Standing"
-		speed = self.walkSpeed
 	end
-	speed *= self.speedMult
+	local speed = getMovementSpeed(self, gait)
 
-	self.gait = gait
+	-- A previous request may still have a locomotion track while this path is
+	-- being computed. Return to the stance idle until NoobPath accepts the new
+	-- route so an immediate TargetUnreachable never flashes a walking pose.
+	self.gait = nil
 	self:_applyStanceHeight()
 	self.humanoid.WalkSpeed = speed
 	self.setPathSpeed(speed)
-	self:_playGaitAnimation(gait)
+	self:_playStanceIdle()
 	self:_setStateAttributes()
-	local destinationPosition = if typeof(destination) == "Instance"
-		then (destination :: BasePart).Position
-		else destination :: Vector3
+	local destinationPosition = if typeof(destination) == "Instance" then (destination :: BasePart).Position else destination :: Vector3
 	self.pendingPathFailure = nil
 	self.terminalPathFailure = nil
 	self.character:SetAttribute("SPHPathError", nil)
-	self.runPath(destinationPosition)
+	if not runOwnedPath(self, serial, destinationPosition) then
+		finishOwnedMovement(self, serial)
+		return false
+	end
+
+	self.gait = gait
+	self:_playGaitAnimation(gait)
+	self:_setStateAttributes()
 
 	local startedAt = os.clock()
 	local lastSampleAt = startedAt
 	local lastRepathAt = startedAt
 	local slowElapsed = 0
 	local reached = false
-	while not self.destroyed and self.moveSerial == serial do
+	while not self.destroyed and self.activeMoveSerial == serial do
 		local now = os.clock()
 		local sampleDelta = now - lastSampleAt
 		lastSampleAt = now
 		local offset = self.rootPart.Position - destinationPosition
 		local closeEnough = Vector3.new(offset.X, 0, offset.Z).Magnitude <= self.reachDistance
-		local touchedWaypoint = if typeof(destination) == "Instance"
-			then waypointContainsCharacter(destination :: BasePart, self.character)
-			else closeEnough
+		local touchedWaypoint = if typeof(destination) == "Instance" then waypointContainsCharacter(destination :: BasePart, self.character) else closeEnough
 		local reachedDestination = if typeof(destination) == "Instance" then touchedWaypoint else closeEnough
 		if reachedDestination then
 			reached = true
@@ -1691,7 +1753,9 @@ function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePa
 				self.pathRepathCount += 1
 				self.character:SetAttribute("SPHPathRepathCount", self.pathRepathCount)
 				self.character:SetAttribute("SPHPathRepathReason", repathReason)
-				self.runPath(destinationPosition)
+				if not runOwnedPath(self, serial, destinationPosition) then
+					break
+				end
 				lastRepathAt = now
 				slowElapsed = 0
 			end
@@ -1699,12 +1763,7 @@ function SPHController.MoveTo(self: SPHController, destination: Vector3 | BasePa
 		task.wait(0.1)
 	end
 
-	if self.moveSerial == serial then
-		self.stopPath()
-		self.gait = nil
-		self:_playStanceIdle()
-		self:_setStateAttributes()
-	end
+	finishOwnedMovement(self, serial)
 	if reached then
 		self.pendingPathFailure = nil
 		self.terminalPathFailure = nil
@@ -1715,6 +1774,7 @@ end
 
 function SPHController.StopMoving(self: SPHController): ()
 	self.moveSerial += 1
+	self.activeMoveSerial = nil
 	self.pendingPathFailure = nil
 	self.terminalPathFailure = nil
 	self.stopPath()
@@ -1756,10 +1816,13 @@ function SPHController.Destroy(self: SPHController): ()
 	self.weaponRig:Destroy()
 	self.inventory:Destroy()
 	self.walkAnimation:Destroy()
+	self.aimOrientation:Destroy()
+	self.aimAttachment:Destroy()
 	self.destroyPath()
 end
 
-function SPHController.new(character: Model, config: Config?): SPHController
+function SPHController.new(character: Model, teamId: Team.Id, config: Config?): SPHController
+	assert(teamId ~= "", "SPHController teamId must not be empty")
 	local controllerConfig: Config = config or {}
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	assert(humanoid, `{character:GetFullName()} is missing a Humanoid`)
@@ -1777,6 +1840,18 @@ function SPHController.new(character: Model, config: Config?): SPHController
 	assert(leftArm and leftArm:IsA("BasePart"), `{character:GetFullName()} is missing a left arm`)
 
 	local model = humanoid.Parent
+	local aimAttachment = Instance.new("Attachment")
+	aimAttachment.Name = "SPHControllerAimAttachment"
+	aimAttachment.Parent = rootPart
+	local aimOrientation = Instance.new("AlignOrientation")
+	aimOrientation.Name = "SPHControllerAimOrientation"
+	aimOrientation.Attachment0 = aimAttachment
+	aimOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	aimOrientation.RigidityEnabled = true
+	aimOrientation.MaxTorque = math.huge
+	aimOrientation.MaxAngularVelocity = math.huge
+	aimOrientation.Enabled = false
+	aimOrientation.Parent = rootPart
 
 	local animator = humanoid:FindFirstChildOfClass("Animator")
 	if not animator then
@@ -1804,18 +1879,21 @@ function SPHController.new(character: Model, config: Config?): SPHController
 	local inventory = Instance.new("Folder")
 	inventory.Name = "SPHInventory"
 	inventory.Parent = character
-	local weaponRig, weaponAnimator, weaponAnimBase, weaponBaseMotor =
-		createWeaponRig(character, assets, head, rightArm, leftArm)
+	local weaponRig, weaponAnimator, weaponAnimBase, weaponBaseMotor = createWeaponRig(character, assets, head, rightArm, leftArm)
 
 	local pathfinder = NoobPath.Humanoid(character, DefaultNoobPathConfig.AgentParams, DefaultNoobPathConfig.Precise)
 	pathfinder.Timeout = DefaultNoobPathConfig.Timeout
 	pathfinder.Visualize = DefaultNoobPathConfig.Visualize
+	local pathDestroyed = false
 	local self = setmetatable({
+		teamId = teamId,
 		character = character,
 		humanoid = humanoid,
 		model = model,
 		animator = animator,
 		rootPart = rootPart,
+		aimAttachment = aimAttachment,
+		aimOrientation = aimOrientation,
 		head = head,
 		torso = torso,
 		neckJoint = neckJoint,
@@ -1887,17 +1965,30 @@ function SPHController.new(character: Model, config: Config?): SPHController
 		equipped = false,
 		destroyed = false,
 		moveSerial = 0,
+		activeMoveSerial = nil,
 		runPath = function(destination: Vector3): ()
+			if pathDestroyed then
+				return
+			end
 			pathfinder:Run(destination)
 		end,
 		stopPath = function(): ()
+			if pathDestroyed then
+				return
+			end
 			pathfinder:Stop()
 		end,
 		destroyPath = function(): ()
+			if pathDestroyed then
+				return
+			end
+			pathDestroyed = true
 			pathfinder:Destroy()
 		end,
 		setPathSpeed = function(speed: number): ()
-			pathfinder.Speed = speed
+			if not pathDestroyed then
+				pathfinder.Speed = speed
+			end
 		end,
 	}, SPHController)
 

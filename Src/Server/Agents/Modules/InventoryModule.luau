@@ -7,9 +7,9 @@ type InventoryModuleData = {
 	magazines: number,
 }
 
-export type InventoryModule = typeof(setmetatable({} :: InventoryModuleData, InventoryModule))
+export type Inventory = typeof(setmetatable({} :: InventoryModuleData, InventoryModule))
 
-function InventoryModule.TryTakeMagazine(self: InventoryModule): boolean
+function InventoryModule.TryTakeMagazine(self: Inventory): boolean
 	if self.magazines <= 0 then
 		return false
 	end
@@ -18,11 +18,11 @@ function InventoryModule.TryTakeMagazine(self: InventoryModule): boolean
 	return true
 end
 
-function InventoryModule.StoreMagazine(self: InventoryModule): ()
+function InventoryModule.StoreMagazine(self: Inventory): ()
 	self.magazines += 1
 end
 
-function InventoryModule.new(magazines: number): InventoryModule
+function InventoryModule.New(magazines: number): Inventory
 	return setmetatable({
 		magazines = math.max(0, magazines),
 	}, InventoryModule)

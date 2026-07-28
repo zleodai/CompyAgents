@@ -2,7 +2,7 @@
 
 return {
 	id = "AttackEnemy",
-	priority = 50,
+	priority = 2,
 	activation = {
 		hasEnemyPos = true,
 	},

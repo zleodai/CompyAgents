@@ -1,22 +1,17 @@
---!strict
-
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
-local Workspace = game:GetService("Workspace")
 
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
 local SPHAgentFactory = require(CompyServerScripts.Integrations.Spearhead.SPHAgentFactory)
+local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 
 local Agent = require(CompyServerScripts.Agents.Agent)
 local AgentService = require(CompyServerScripts.World.AgentService)
 local EnvironmentService = require(CompyServerScripts.World.EnvironmentService)
-local BlackboardService = require(CompyServerScripts.Services.BlackboardService)
-local CombatService = require(CompyServerScripts.Services.CombatService)
-local MetricsService = require(CompyServerScripts.Services.MetricsService)
-local VisualizationService = require(CompyServerScripts.Services.VisualizationService)
 local _DefaultConfig = require(CompySharedScripts.Config)
+local Team = require(CompySharedScripts.Team)
 
 local Simulation = {}
 Simulation.__index = Simulation
@@ -24,162 +19,151 @@ Simulation.__index = Simulation
 type SimulationData = {
 	config: typeof(_DefaultConfig),
 	started: boolean,
+	starting: boolean,
 	agents: { Agent.Agent },
-	modelFolder: Folder?,
 	agentService: AgentService.AgentService,
 	environment: EnvironmentService.EnvironmentService,
-	blackboard: BlackboardService.BlackboardService,
-	combat: CombatService.CombatService,
-	metrics: MetricsService.MetricsService,
-	visualization: VisualizationService.VisualizationService,
-	debugAverageFrameMSRemote: RemoteFunction?,
+	nextAgentId: number,
+	spawnedAgentCountByTeam: { [Team.Id]: number },
 }
 
 export type Simulation = typeof(setmetatable({} :: SimulationData, Simulation))
 
-local function getCharacterPosition(character: Model): Vector3
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if rootPart and rootPart:IsA("BasePart") then
-		return rootPart.Position
-	end
-	return character:GetPivot().Position
-end
+local function getSpawnCFrame(self: Simulation, teamId: Team.Id, index: number): CFrame
+	assert(index >= 1 and index % 1 == 0, "index must be a positive integer")
 
-local function getVisionOrigin(character: Model): Vector3
-	local head = character:FindFirstChild("Head")
-	if head and head:IsA("BasePart") then
-		return head.Position
-	end
-	return character:GetPivot().Position
-end
-
-local function isInsideFieldOfView(
-	character: Model,
-	targetPosition: Vector3,
-	fovX: number,
-	fovY: number,
-	distance: number
-): boolean
-	local origin = getVisionOrigin(character)
-	local offset = targetPosition - origin
-	if offset.Magnitude <= 0.001 or offset.Magnitude > distance then
-		return false
-	end
-
-	local localDirection = character:GetPivot():VectorToObjectSpace(offset.Unit)
-	if localDirection.Z >= 0 then
-		return false
-	end
-
-	local horizontalAngle = math.deg(math.atan2(math.abs(localDirection.X), -localDirection.Z))
-	local horizontalMagnitude = Vector2.new(localDirection.X, localDirection.Z).Magnitude
-	local verticalAngle = math.deg(math.atan2(math.abs(localDirection.Y), horizontalMagnitude))
-	return horizontalAngle <= fovX * 0.5 and verticalAngle <= fovY * 0.5
-end
-
-local function appendUnique(positions: { Vector3 }, position: Vector3): ()
-	for _, existing in ipairs(positions) do
-		if (existing - position).Magnitude <= 0.5 then
-			return
+	local spawnPoints: { EnvironmentService.SpawnPointRecord } = self.environment:QueryAllSpawnPoints({
+		teamId = teamId,
+	})
+	if #spawnPoints > 0 then
+		local spawnPoint = spawnPoints[((index - 1) % #spawnPoints) + 1]
+		local position = spawnPoint.position
+		if spawnPoint.spawnRadius > 0 then
+			local angle = math.random() * math.pi * 2
+			local distance = math.sqrt(math.random()) * spawnPoint.spawnRadius
+			position += Vector3.new(math.cos(angle) * distance, 0, math.sin(angle) * distance)
 		end
+		return CFrame.lookAt(position, position + spawnPoint.facing)
 	end
-	table.insert(positions, position)
+
+	if not self.config.Simulation.UseConfigSpawnsFallback then
+		error(`No Studio spawn is available for team {teamId}`)
+	end
+
+	local teamConfig = self.config.Teams[teamId]
+	assert(teamConfig, `Missing team config for {teamId}`)
+	local position = teamConfig.SpawnOrigin + Vector3.new(0, 0, (index - 1) * teamConfig.SpawnSpacing)
+	return CFrame.lookAt(position, position + teamConfig.Forward)
 end
 
-function Simulation.CollectVisibleWorldPositions(
-	self: Simulation,
-	agentId: number,
-	character: Model,
-	positions: { Vector3 },
-	fovX: number,
-	fovY: number,
-	distance: number
-): { Vector3 }
-	local visible: { Vector3 } = {}
-	local origin = getVisionOrigin(character)
-	for _, position in ipairs(positions) do
-		if isInsideFieldOfView(character, position, fovX, fovY, distance) then
-			local hasLineOfSight, rayEnd = self.environment:RaycastLineOfSight(origin, position, { character }, nil)
-			self.visualization:RecordRaycast(agentId, origin, rayEnd)
-			if hasLineOfSight then
-				table.insert(visible, position)
-			end
-		end
+local function destroyAgent(agent: Agent.Agent): ()
+	local model = agent.controller:GetModel()
+	agent:End()
+	if model.Parent then
+		model:Destroy()
 	end
-	return visible
 end
 
-function Simulation.CreateModelFolder(self: Simulation): Folder
-	local existing = Workspace:FindFirstChild(self.config.Simulation.GeneratedModelFolderName)
-	if existing and existing:IsA("Folder") then
-		self.modelFolder = existing
-		return existing
+local function destroyController(controller: SPHController.SPHController): ()
+	local model = controller:GetModel()
+	controller:Destroy()
+	if model.Parent then
+		model:Destroy()
 	end
-
-	local folder = Instance.new("Folder")
-	folder.Name = self.config.Simulation.GeneratedModelFolderName
-	folder.Parent = Workspace
-	self.modelFolder = folder
-	return folder
 end
 
 function Simulation.SpawnAgents(self: Simulation): ()
-	local teamIds: { string } = {}
+	assert(self.started, "Simulation must be started before spawning Agents")
+	local firstNewAgentIndex = #self.agents + 1
+	local teamIds: { Team.Id } = {}
+	local previousSpawnedAgentCountByTeam: { [Team.Id]: number? } = {}
 	for teamId in pairs(self.config.Teams) do
 		table.insert(teamIds, teamId)
+		previousSpawnedAgentCountByTeam[teamId] = self.spawnedAgentCountByTeam[teamId]
 	end
 	table.sort(teamIds)
 
-	local nextAgentId = 1
-	for _, teamId in ipairs(teamIds) do
-		local factory = SPHAgentFactory.new({
-			maxHealth = 80,
-		})
-
-		for index = 1, self.config.Simulation.DemoAgentsPerTeam do
-			local agentTeamId = teamId
-			local agentId = nextAgentId
-			nextAgentId += 1
-			local agentName = ("%s_%02d"):format(agentTeamId, index)
-			local spawnCFrame = self.environment:GetSpawnCFrame(agentTeamId, index)
-
-			local controller = factory:Create(agentName, spawnCFrame)
-
-			local agent = Agent.new({
-				id = agentId,
-				magazines = self.config.Agent.InitialMagazines,
-				fovX = self.config.Agent.FovX,
-				fovY = self.config.Agent.FovY,
-				visionDistance = self.config.Agent.VisionDistance,
-				failedPlanCooldown = self.config.Agent.FailedPlanCooldown,
-				controller = controller,
-				cadence = self.config.Cadence,
+	local spawnSucceeded, spawnError = xpcall(function(): ()
+		for _, teamId in ipairs(teamIds) do
+			Team.AssertKnown(self.config.Teams, teamId)
+			local factory = SPHAgentFactory.new({
+				teamId = teamId,
+				maxHealth = self.config.Agent.MaxHealth,
+				controllerConfig = {
+					modelNames = self.config.Teams[teamId].Models,
+					weaponName = "AKM",
+					moveTimeout = 30,
+					aimSpeed = 0.4,
+				},
 			})
 
-			self.agentService:Register(agentId, agentName, agentTeamId, agent, controller:GetModel())
-			table.insert(self.agents, agent)
+			for _index = 1, self.config.Simulation.DemoAgentsPerTeam do
+				local agentTeamId = teamId
+				local spawnIndex = (self.spawnedAgentCountByTeam[agentTeamId] or 0) + 1
+				local agentName = ("%s_%02d"):format(agentTeamId, spawnIndex)
+				local spawnCFrame = getSpawnCFrame(self, agentTeamId, spawnIndex)
+
+				local controller = factory:Create(agentName, spawnCFrame)
+				local agentId = self.nextAgentId
+				self.nextAgentId += 1
+				local constructed, agentOrError = pcall(function(): Agent.Agent
+					return Agent.new(agentId, agentTeamId, controller, self.config.Agent, self.config.Cadence, {
+						agentService = self.agentService,
+						environmentService = self.environment,
+					})
+				end)
+				if not constructed then
+					destroyController(controller)
+					error(agentOrError, 0)
+				end
+				local agent = agentOrError :: Agent.Agent
+
+				local registered, registeredId = pcall(function(): AgentService.AgentId?
+					return self.agentService:Register(agent, agentTeamId)
+				end)
+				if not registered or not registeredId then
+					destroyAgent(agent)
+					if not registered then
+						error(registeredId, 0)
+					end
+					error(`Agent {agentId} died or was destroyed before registration`)
+				end
+				self.spawnedAgentCountByTeam[agentTeamId] = spawnIndex
+				table.insert(self.agents, agent)
+			end
 		end
+
+		if not self.starting then
+			for index = firstNewAgentIndex, #self.agents do
+				self.agents[index]:Start()
+			end
+		end
+	end, debug.traceback)
+
+	if not spawnSucceeded then
+		for index = #self.agents, firstNewAgentIndex, -1 do
+			local agent = self.agents[index]
+			self.agentService:Unregister(agent)
+			table.remove(self.agents, index)
+			destroyAgent(agent)
+		end
+		for _, teamId in ipairs(teamIds) do
+			self.spawnedAgentCountByTeam[teamId] = previousSpawnedAgentCountByTeam[teamId] or 0
+		end
+		error(spawnError, 0)
 	end
 end
 
-function Simulation.BindDebugRemote(self: Simulation): ()
-	local folder = ReplicatedStorage:FindFirstChild("RemoteEvents")
-	local remote = if folder then folder:FindFirstChild("DebugAverageFrameMS") else nil
-	if remote and remote:IsA("RemoteFunction") then
-		self.debugAverageFrameMSRemote = remote
-		remote.OnServerInvoke = function(): number
-			return self.metrics:GetAverageFrameMS()
-		end
+function Simulation.RemoveAgent(self: Simulation, agent: Agent.Agent): boolean
+	local agentIndex = table.find(self.agents, agent)
+	if not agentIndex then
+		return false
 	end
-end
 
-function Simulation.UnbindDebugRemote(self: Simulation): ()
-	if self.debugAverageFrameMSRemote then
-		self.debugAverageFrameMSRemote.OnServerInvoke = function(): number
-			return 0
-		end
-		self.debugAverageFrameMSRemote = nil
-	end
+	self.agentService:Unregister(agent)
+	table.remove(self.agents, agentIndex)
+	destroyAgent(agent)
+	return true
 end
 
 function Simulation.Start(self: Simulation): ()
@@ -187,17 +171,29 @@ function Simulation.Start(self: Simulation): ()
 		return
 	end
 	self.started = true
-	self.environment:Refresh()
-	self:SpawnAgents()
-	self.blackboard:Start()
-	self.agentService:BindDebugRemotes()
-	self.visualization:Start()
-	self.metrics:Start()
-	self:BindDebugRemote()
+	self.starting = true
 
-	for _, agent in ipairs(self.agents) do
-		agent.startRuntime()
+	local startedSuccessfully, startError = xpcall(function(): ()
+		self.environment:Start()
+		self.agentService:Start()
+		self:SpawnAgents()
+		for _, agent in ipairs(self.agents) do
+			agent:Start()
+		end
+	end, debug.traceback)
+
+	if not startedSuccessfully then
+		self.agentService:End()
+		self.environment:End()
+		for _, agent in ipairs(self.agents) do
+			destroyAgent(agent)
+		end
+		table.clear(self.agents)
+		self.started = false
+		self.starting = false
+		error(startError, 0)
 	end
+	self.starting = false
 end
 
 function Simulation.Stop(self: Simulation): ()
@@ -205,50 +201,29 @@ function Simulation.Stop(self: Simulation): ()
 		return
 	end
 	self.started = false
+	self.starting = false
 
+	self.agentService:End()
+	self.environment:End()
 	for _, agent in ipairs(self.agents) do
-		agent.endRuntime()
+		destroyAgent(agent)
 	end
-	self:UnbindDebugRemote()
-	self.visualization:Stop()
-	self.metrics:Stop()
-	self.blackboard:Stop()
-	self.combat:Clear()
-	self.agentService:DestroyAll()
 	table.clear(self.agents)
-
-	if self.modelFolder then
-		self.modelFolder:Destroy()
-		self.modelFolder = nil
-	end
 end
 
 function Simulation.new(config: typeof(_DefaultConfig)): Simulation
-	local agentService = AgentService.new()
+	local agentService = AgentService.new(config.Simulation.AgentService, config.Teams)
 	local environment = EnvironmentService.new(config)
-	local blackboard = BlackboardService.new(config)
-	local visualization = VisualizationService.new(config, agentService)
-	local combat = CombatService.new(
-		config,
-		agentService,
-		function(agentId: number, startPosition: Vector3, endPosition: Vector3): ()
-			visualization:RecordTracer(agentId, startPosition, endPosition)
-		end
-	)
-	local metrics = MetricsService.new(config, agentService)
 
 	return setmetatable({
 		config = config,
 		started = false,
+		starting = false,
 		agents = {},
-		modelFolder = nil,
 		agentService = agentService,
 		environment = environment,
-		blackboard = blackboard,
-		combat = combat,
-		metrics = metrics,
-		visualization = visualization,
-		debugAverageFrameMSRemote = nil,
+		nextAgentId = 1,
+		spawnedAgentCountByTeam = {},
 	}, Simulation)
 end
 
