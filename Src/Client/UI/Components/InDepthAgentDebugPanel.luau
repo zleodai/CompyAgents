@@ -7,14 +7,15 @@ local TextService = game:GetService("TextService")
 local Workspace = game:GetService("Workspace")
 
 local React = require(ReplicatedStorage.Packages.React)
-local Config = require(ReplicatedStorage.CompyAgent.Config)
 local Theme = require(script.Parent.Theme)
 
 local player = Players.LocalPlayer
-local playerScripts = player:WaitForChild("PlayerScripts")
-local CompyClientScripts = playerScripts:WaitForChild("CompyAgent")
-local DebugRemoteEvents = require(CompyClientScripts.Remotes.DebugRemoteEvents)
-local DebugRemoteFunctions = require(CompyClientScripts.Remotes.DebugRemoteFunctions)
+local remoteEventsFolder = ReplicatedStorage:WaitForChild("RemoteEvents")
+local setAgentDebugActiveRemote = remoteEventsFolder:WaitForChild("DebugSetAgentInDepthDebugActive")
+local getAgentDebugTextRemote = remoteEventsFolder:WaitForChild("DebugGetAgentInDepthDebugText")
+
+assert(setAgentDebugActiveRemote:IsA("RemoteEvent"), "DebugSetAgentInDepthDebugActive must be a RemoteEvent")
+assert(getAgentDebugTextRemote:IsA("RemoteFunction"), "DebugGetAgentInDepthDebugText must be a RemoteFunction")
 
 local NO_AGENT_ID = ""
 local PANEL_WIDTH_SCALE = 0.33
@@ -23,14 +24,17 @@ local LOG_HORIZONTAL_PADDING = 24
 local LOG_TEXT_SIZE = 14
 local LOG_CANVAS_VERTICAL_PADDING = 24
 local LOG_SCROLLBAR_WIDTH = 12
+local DEBUG_REFRESH_INTERVAL = 0.1
 
-local function getAgentModelFolder(): Folder?
-	local folder = Workspace:FindFirstChild(Config.Agent.ModelFolderName)
-	if folder and folder:IsA("Folder") then
-		return folder
-	end
+local function setAgentDebugActive(agentId: string, isActive: boolean): ()
+	setAgentDebugActiveRemote:FireServer(agentId, isActive)
+end
 
-	return nil
+local function getAgentDebugText(agentId: string): string
+	local didInvoke, result = pcall(function(): any
+		return getAgentDebugTextRemote:InvokeServer(agentId)
+	end)
+	return if didInvoke and type(result) == "string" then result else ""
 end
 
 local function getAgentIdFromTarget(target: BasePart?): string?
@@ -38,17 +42,24 @@ local function getAgentIdFromTarget(target: BasePart?): string?
 		return nil
 	end
 
-	local model = target:FindFirstAncestorOfClass("Model")
-	if not model or not model:FindFirstChildOfClass("Humanoid") then
-		return nil
+	local ancestor: Instance? = target
+	while ancestor and ancestor ~= Workspace do
+		if ancestor:IsA("Model") then
+			local humanoid = ancestor:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				if ancestor.Parent ~= Workspace or Players:GetPlayerFromCharacter(ancestor) then
+					return nil
+				end
+				if typeof(ancestor:GetAttribute("SPHStance")) ~= "string" then
+					return nil
+				end
+				return ancestor.Name
+			end
+		end
+		ancestor = ancestor.Parent
 	end
 
-	local folder = getAgentModelFolder()
-	if not folder or not model:IsDescendantOf(folder) then
-		return nil
-	end
-
-	return model.Name
+	return nil
 end
 
 local function isPointerInsidePanel(mouseX: number): boolean
@@ -57,7 +68,7 @@ local function isPointerInsidePanel(mouseX: number): boolean
 		return false
 	end
 
-	return mouseX >= camera.ViewportSize.X * 0.5
+	return mouseX >= camera.ViewportSize.X * (1 - PANEL_WIDTH_SCALE)
 end
 
 local function getLogTextWidth(): number
@@ -99,7 +110,6 @@ local function InDepthAgentDebugPanel()
 			return
 		end
 
-		DebugRemoteEvents.fireAgentInDepthDebugActiveChanged(selectedAgentId, false)
 		setSelectedAgentId(NO_AGENT_ID)
 		setDebugText("")
 	end
@@ -117,17 +127,11 @@ local function InDepthAgentDebugPanel()
 			end
 
 			if selectedAgentId == agentId then
-				DebugRemoteEvents.fireAgentInDepthDebugActiveChanged(agentId, false)
 				setSelectedAgentId(NO_AGENT_ID)
 				setDebugText("")
 				return
 			end
 
-			if selectedAgentId ~= NO_AGENT_ID then
-				DebugRemoteEvents.fireAgentInDepthDebugActiveChanged(selectedAgentId, false)
-			end
-
-			DebugRemoteEvents.fireAgentInDepthDebugActiveChanged(agentId, true)
 			setSelectedAgentId(agentId)
 			setDebugText("")
 		end)
@@ -139,31 +143,49 @@ local function InDepthAgentDebugPanel()
 
 	React.useEffect(function()
 		if selectedAgentId == NO_AGENT_ID then
+			return function(): () end
+		end
+
+		setAgentDebugActive(selectedAgentId, true)
+		return function(): ()
+			setAgentDebugActive(selectedAgentId, false)
+		end
+	end, { selectedAgentId })
+
+	React.useEffect(function()
+		if selectedAgentId == NO_AGENT_ID then
 			setDebugText("")
 			return function(): () end
 		end
 
 		local isMounted = true
-		local latestRequestId = 0
-		local latestAppliedRequestId = 0
+		local requestInFlight = false
+		local refreshElapsed = 0
 
 		local function requestDebugText(): ()
-			latestRequestId += 1
-			local requestId = latestRequestId
+			if requestInFlight then
+				return
+			end
+			requestInFlight = true
 
 			task.spawn(function(): ()
-				local nextDebugText = DebugRemoteFunctions.getAgentInDepthDebugText(selectedAgentId)
+				local nextDebugText = getAgentDebugText(selectedAgentId)
 
-				if isMounted and requestId > latestAppliedRequestId then
-					latestAppliedRequestId = requestId
+				if isMounted then
 					setDebugText(nextDebugText)
 				end
+				requestInFlight = false
 			end)
 		end
 
 		requestDebugText()
 
-		local heartbeatConnection = RunService.Heartbeat:Connect(function(): ()
+		local heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime: number): ()
+			refreshElapsed += deltaTime
+			if refreshElapsed < DEBUG_REFRESH_INTERVAL then
+				return
+			end
+			refreshElapsed %= DEBUG_REFRESH_INTERVAL
 			requestDebugText()
 		end)
 

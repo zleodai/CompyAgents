@@ -65,7 +65,6 @@ local function findClosestTarget(actionData: { [any]: any }, controller: SPHCont
 end
 
 local function moveToClosestTarget(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): boolean
-	print("entering engagement distance")
 	local target = actionData.target
 	if not target or target.Parent == nil then
 		data.RequestReplan(" [ EngageEnemy moveToClosestTarget ] target head is no longer available")
@@ -80,8 +79,6 @@ local function moveToClosestTarget(actionData: { [any]: any }, controller: SPHCo
 end
 
 local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	print(`{controller:GetHumanoid().Name} Engaging Enemy`)
-
 	actionData.started = false
 	task.defer(function()
 		controller
@@ -120,7 +117,6 @@ local function Update(actionData: { [any]: any }, controller: SPHController.SPHC
 		end
 
 		if actionData.targetDist < config.EngagementDistance then
-			print("entered engagement distance")
 			task.defer(function()
 				controller:StopMoving()
 			end)

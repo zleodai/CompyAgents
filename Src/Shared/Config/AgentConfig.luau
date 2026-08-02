@@ -2,8 +2,7 @@
 
 local AgentConfig = {
 	MaxHealth = 100,
-	AimReactionTime = 0.2,
-	InitialMagazines = 3,
+	InitialMagazines = math.huge,
 	VisionDistance = 1000,
 	FailedPlanCooldown = 0.5,
 	InfoBar = false,
@@ -12,11 +11,21 @@ local AgentConfig = {
 	DebugLog = false,
 }
 
+AgentConfig.ControllerConfig = {
+	weaponName = "AKM",
+	reserveAmmo = math.huge,
+	moveTimeout = 30,
+	aimSpeed = 0.4,
+	speedMult = 0.75,
+}
+
 AgentConfig.FindEnemyLocation = {
+	StuckCheckInterval = 1, --has to be atleast 1 second
+	StuckDistance = 1,
 	RetargetInterval = 20, --has to be atleast 1 second
-	DirectionNoise = 0.75,
+	DirectionNoiseImpact = 0.75,
 	FowardDistanceMin = 30,
-	FowardDistanceMax = 50,
+	FowardDistanceMax = 200,
 }
 
 AgentConfig.EngageEnemy = {

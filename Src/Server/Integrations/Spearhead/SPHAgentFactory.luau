@@ -6,27 +6,20 @@ local Workspace = game:GetService("Workspace")
 
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
+local Config = require(ReplicatedStorage.CompyAgent.Config)
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local Team = require(CompySharedScripts.Team)
+
+local Configs = require(CompySharedScripts.Config)
 
 local SPHAgentFactory = {}
 SPHAgentFactory.__index = SPHAgentFactory
 
-export type Config = {
+export type AgentConfig = {
 	teamId: Team.Id,
-	parent: Instance?,
 	maxHealth: number?,
 	controllerConfig: SPHController.Config?,
 }
-
-type FactoryData = {
-	teamId: Team.Id,
-	parent: Instance,
-	maxHealth: number,
-	controllerConfig: SPHController.Config,
-}
-
-export type SPHAgentFactory = typeof(setmetatable({} :: FactoryData, SPHAgentFactory))
 
 local DEFAULT_MODEL_NAME = "Doge"
 local REQUIRED_R6_PARTS = {
@@ -38,6 +31,11 @@ local REQUIRED_R6_PARTS = {
 	"Left Leg",
 	"Right Leg",
 }
+local DEFAULT_CONFIG = {
+	teamId = "Blue",
+	health = Config.Agent.MaxHealth,
+	controllerConfig = Configs.Agent.ControllerConfig :: { [any]: any },
+} :: AgentConfig
 
 local function resolveModelTemplate(modelName: string): Model
 	assert(modelName ~= "", "controllerConfig.modelName must not be empty")
@@ -58,7 +56,7 @@ local function resolveModelTemplate(modelName: string): Model
 	return template
 end
 
-local function mergeControllerConfig(defaults: SPHController.Config, overrides: SPHController.Config?): SPHController.Config
+local function mergeConfig(defaults: { [any]: any }, overrides: { [any]: any }?): { [any]: any }
 	local merged = table.clone(defaults)
 	if overrides then
 		for key, value in overrides do
@@ -68,25 +66,26 @@ local function mergeControllerConfig(defaults: SPHController.Config, overrides: 
 	return merged
 end
 
-function SPHAgentFactory.Create(self: SPHAgentFactory, name: string, spawnCFrame: CFrame, controllerOverrides: SPHController.Config?): SPHController.SPHController
-	assert(self.parent:FindFirstChild(name) == nil, `{self.parent:GetFullName()} already contains {name}`)
+function SPHAgentFactory.Create(name: string, spawnCFrame: CFrame, config: AgentConfig): SPHController.SPHController
+	local mergedConfig = mergeConfig(DEFAULT_CONFIG, config) :: AgentConfig
 
-	local mergedControllerConfig = mergeControllerConfig(self.controllerConfig, controllerOverrides)
+	local defaultControllerConfig = DEFAULT_CONFIG.controllerConfig or {}
+	local mergedControllerConfig = mergeConfig(defaultControllerConfig, config.controllerConfig) :: SPHController.Config
 
 	local modelName = DEFAULT_MODEL_NAME
 
-	local modelOptions = mergedControllerConfig.modelNames
+	local modelOptions = Configs.Teams[mergedConfig.teamId].Models
 	if modelOptions then
 		modelName = modelOptions[math.random(1, #modelOptions)]
 	end
 
 	local character = resolveModelTemplate(modelName):Clone()
 	character.Name = name
-	character.Parent = self.parent
 
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
 	assert(rootPart and rootPart:IsA("BasePart"), `{character:GetFullName()} is missing HumanoidRootPart`)
 	character.PrimaryPart = rootPart
+	character.Parent = Workspace
 	character:PivotTo(spawnCFrame)
 
 	for _, descendant in character:GetDescendants() do
@@ -102,30 +101,18 @@ function SPHAgentFactory.Create(self: SPHAgentFactory, name: string, spawnCFrame
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	assert(humanoid, `{character:GetFullName()} is missing a Humanoid`)
 	assert(humanoid.RigType == Enum.HumanoidRigType.R6, `{character:GetFullName()} must use an R6 Humanoid`)
-	humanoid.MaxHealth = self.maxHealth
-	humanoid.Health = self.maxHealth
+	humanoid.MaxHealth = mergedConfig.maxHealth or Configs.Agent.MaxHealth
+	humanoid.Health = mergedConfig.maxHealth or Configs.Agent.MaxHealth
 	humanoid.DisplayName = name
 
 	local constructed, controllerOrError = pcall(function(): SPHController.SPHController
-		return SPHController.new(character, self.teamId, mergedControllerConfig)
+		return SPHController.new(character, mergedConfig.teamId, mergedControllerConfig)
 	end)
 	if not constructed then
 		character:Destroy()
 		error(controllerOrError, 0)
 	end
 	return controllerOrError :: SPHController.SPHController
-end
-
-function SPHAgentFactory.new(config: Config): SPHAgentFactory
-	assert(config.teamId ~= "", "SPHAgentFactory teamId must not be empty")
-	local factoryConfig = config
-	local controllerConfig = table.clone(factoryConfig.controllerConfig or {})
-	return setmetatable({
-		teamId = factoryConfig.teamId,
-		parent = factoryConfig.parent or Workspace,
-		maxHealth = math.max(1, factoryConfig.maxHealth or 100),
-		controllerConfig = controllerConfig,
-	}, SPHAgentFactory)
 end
 
 return SPHAgentFactory

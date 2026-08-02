@@ -8,7 +8,6 @@ local Types = require(CompyServerScripts.Core.Types)
 local Goals = {}
 
 Goals.Goals = {
-	-- ["Survive"] = require(CompyServerScripts.GOAP.Goals.Survive),
 	["AttackEnemy"] = require(CompyServerScripts.GOAP.Goals.AttackEnemy),
 	-- ["CaptureObjective"] = require(CompyServerScripts.GOAP.Goals.CaptureObjective),
 } :: { [string]: Types.Goal }

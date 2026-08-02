@@ -3,8 +3,10 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
+local CompySharedScripts = ReplicatedStorage.CompyAgent
 
-local AgentConfig = require(ReplicatedStorage.CompyAgent.Config.AgentConfig)
+local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
+local LogQueue = require(CompySharedScripts.LogQueue)
 
 local Goals = require(ServerScriptService.CompyAgent.GOAP.Goals)
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
@@ -39,6 +41,8 @@ type PlannerState = {
 
 	lastFailedPlanAt: number,
 	failedPlanCooldown: number,
+
+	logs: LogQueue.LogQueue,
 }
 
 export type Planner = typeof(setmetatable({} :: PlannerState, PlannerModule))
@@ -67,6 +71,8 @@ function PlannerModule.new(): Planner
 
 		lastFailedPlanAt = 0,
 		failedPlanCooldown = AgentConfig.FailedPlanCooldown,
+
+		logs = LogQueue.new(),
 	}, PlannerModule)
 end
 
@@ -75,7 +81,10 @@ local function makePlan(self: Planner, data: Types.AgentSharedData): ()
 		return
 	end
 
+	self.logs:push("makePlan called")
+
 	if self.action and self.action.End then
+		self.logs:push(`makePlan -> ending action {self.action.id}`)
 		self.action.End(self.action.actionData, self.controller, data)
 	end
 	self.planSuccess = false
@@ -87,6 +96,7 @@ local function makePlan(self: Planner, data: Types.AgentSharedData): ()
 	local planData = GOAPPlanner.MakePlan(self.beliefs, self.actions, self.goals)
 
 	if not planData.success or #planData.plan == 0 then
+		self.logs:push(`makePlan failed, MakePlan failed`)
 		self.needsReplan = true
 		self.replanReason = "[ makePlan ] MakePlan failed"
 		self.lastFailedPlanAt = os.clock()
@@ -95,6 +105,7 @@ local function makePlan(self: Planner, data: Types.AgentSharedData): ()
 
 	local firstAction = planData.plan[1]
 	if not firstAction then
+		self.logs:push(`makePlan failed, MakePlan returned invalid plan`)
 		self.needsReplan = true
 		self.replanReason = "[ makePlan ] MakePlan returned invalid plan"
 		self.lastFailedPlanAt = os.clock()
@@ -109,6 +120,7 @@ local function makePlan(self: Planner, data: Types.AgentSharedData): ()
 	self.needsReplan = false
 	self.replanReason = ""
 
+	self.logs:push(`makePlan success -> Starting action {firstAction.id}`)
 	if firstAction.Start then
 		firstAction.Start(firstAction.actionData, self.controller, data)
 	end
@@ -120,6 +132,7 @@ local function handleAction(self: Planner, data: Types.AgentSharedData, dt: numb
 	end
 
 	if not self.action then
+		self.logs:push(`handleAction -> replanning, action is nil`)
 		self.needsReplan = true
 		self.replanReason = "[ handleAction ] action is nil"
 		return
@@ -127,6 +140,7 @@ local function handleAction(self: Planner, data: Types.AgentSharedData, dt: numb
 	local action: Types.Action = self.action
 
 	if action.FinishedCheck(action.actionData, self.controller, data) then
+		self.logs:push(`handleAction action {action.id} finished`)
 		if action.End then
 			action.End(action.actionData, self.controller, data)
 		end
@@ -135,10 +149,12 @@ local function handleAction(self: Planner, data: Types.AgentSharedData, dt: numb
 		self.action = nextAction
 
 		if nextAction then
+			self.logs:push(`handleAction -> starting next action {nextAction.id}`)
 			if nextAction.Start then
 				nextAction.Start(nextAction.actionData, self.controller, data)
 			end
 		else
+			self.logs:push(`handleAction -> replanning, plan finished`)
 			self.needsReplan = true
 			self.replanReason = "[ handleAction ] plan finished"
 		end
@@ -175,6 +191,7 @@ function PlannerModule.Update(self: Planner, beliefs: { [string]: boolean }, age
 		return
 	end
 
+	self.logs:push(`Update -> replanning`)
 	makePlan(self, agentData)
 end
 
@@ -184,6 +201,7 @@ function PlannerModule.ForceStop(self: Planner, data: Types.AgentSharedData): ()
 	end
 
 	if self.action then
+		self.logs:push(`ForceStop -> stopping action {self.action.id}`)
 		if self.action.End then
 			self.action.End(self.action.actionData, self.controller, data)
 		end
@@ -194,8 +212,13 @@ function PlannerModule.ForceStop(self: Planner, data: Types.AgentSharedData): ()
 end
 
 function PlannerModule.Replan(self: Planner, reason: string): ()
+	self.logs:push(`Replan, {reason}`)
 	self.needsReplan = true
 	self.replanReason = reason
+end
+
+function PlannerModule.DebugDump(self: Planner): string
+	return self.logs:getContents()
 end
 
 return PlannerModule

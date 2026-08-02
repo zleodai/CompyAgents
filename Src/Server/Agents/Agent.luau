@@ -7,6 +7,7 @@ local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
 local Types = require(CompyServerScripts.Core.Types)
+local Util = require(CompyServerScripts.Core.Util)
 
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local VisionSensor = require(CompyServerScripts.Agents.Sensors.VisionSensor)
@@ -29,13 +30,9 @@ type AgentData = {
 
 	noisyEnemyDirection: Vector3,
 	noisyObjectiveDirection: Vector3,
+
 	sightedEnemyLocs: { BasePart },
 	sightedObjectiveLocs: { Vector3 },
-	sightedCrouchCoverLocs: { Vector3 },
-	sightedProneCoverLocs: { Vector3 },
-
-	behaviourState: Types.BehaviourState,
-	behaviourRequest: Types.BehaviourState?,
 
 	controller: SPHController.SPHController,
 	vision: VisionSensor.VisionSensor,
@@ -46,13 +43,8 @@ type AgentData = {
 	visionElapsed: number,
 	plannerElapsed: number,
 
-	active: boolean,
-	ended: boolean,
+	alive: boolean,
 }
-
-local function requestChangeBehaviour(self: Agent, request: Types.BehaviourState): ()
-	self.behaviourRequest = request
-end
 
 local function requestReplan(self: Agent, reason: string): ()
 	self.planner:Replan(reason)
@@ -69,12 +61,6 @@ local function getSharedData(self: Agent): Types.AgentSharedData
 		noisyObjectiveDirection = self.noisyObjectiveDirection,
 		sightedEnemyLocs = self.sightedEnemyLocs,
 		sightedObjectiveLocs = self.sightedObjectiveLocs,
-		sightedCrouchCoverLocs = self.sightedCrouchCoverLocs,
-		sightedProneCoverLocs = self.sightedProneCoverLocs,
-		behaviourState = self.behaviourState,
-		RequestChangeBehaviour = function(request: Types.BehaviourState)
-			requestChangeBehaviour(self, request)
-		end,
 		RequestReplan = function(reason: string)
 			requestReplan(self, reason)
 		end,
@@ -98,25 +84,31 @@ local function constructBeliefs(self: Agent): { [string]: boolean }
 
 	local ammo, _ = self.controller:GetAmmo()
 
+	local action = self.planner.action
+
 	return {
-		objectiveCaptured = false,
-		crouchCoverInRange = #self.sightedCrouchCoverLocs > 0,
 		lowHealth = lowHealth,
-		hasObjectivePos = #self.sightedObjectiveLocs > 0,
-		inCrouchCover = false,
-		inProneCover = false,
-		proneCoverInRange = #self.sightedProneCoverLocs > 0,
-		hasAmmo = ammo > 0,
 		inDanger = enemyVisible and lowHealth,
+
+		objectiveCaptured = false,
+		hasObjectivePos = #self.sightedObjectiveLocs > 0,
+
+		hasAmmo = ammo > 0,
+
 		standing = standing,
 		crouched = crouched,
 		proned = proned,
+
 		hasEnemyPos = enemyVisible,
-		enemyEngaged = self.behaviourState.behaviour == "EngagingEnemy",
+		enemyEngaged = action ~= nil and action.id == "EngageEnemy",
 	}
 end
 
 function Agent.Update(self: Agent, dt: number): ()
+	if not self.alive then
+		return
+	end
+
 	self.visionElapsed += dt
 	if self.visionElapsed >= self.cadenceConfig.VisionInterval then
 		self.visionElapsed = 0
@@ -141,13 +133,12 @@ function Agent.Update(self: Agent, dt: number): ()
 end
 
 function Agent.Start(self: Agent): ()
-	if self.active or self.ended then
+	if self.alive then
 		return
 	end
-	self.active = true
+	self.alive = true
 
 	self.planner:Awake(self.controller)
-	self.vision:Awake()
 
 	self.heartBeat = RunService.Heartbeat:Connect(function(dt: number): ()
 		Agent.Update(self, dt)
@@ -155,20 +146,57 @@ function Agent.Start(self: Agent): ()
 end
 
 function Agent.End(self: Agent): ()
-	if self.ended then
+	if not self.alive then
 		return
 	end
 
-	self.active = false
-	self.ended = true
+	self.alive = false
 
 	if self.heartBeat then
 		self.heartBeat:Disconnect()
 		self.heartBeat = nil
 	end
 
+	local model = self.controller:GetHumanoid().Parent
+
 	self.planner:ForceStop(getSharedData(self))
 	self.controller:Destroy()
+
+	-- Hide BaseParts
+	task.defer(function()
+		task.wait(0.75)
+		if not model then
+			return
+		end
+		for _, child in ipairs(model:GetChildren()) do
+			if child:IsA("BasePart") then
+				local bodyPart = child :: BasePart
+				bodyPart.CanCollide = false
+				bodyPart.CanQuery = false
+				bodyPart.CanTouch = false
+			end
+		end
+	end)
+end
+
+function Agent.DebugDump(self: Agent): string
+	local log = ""
+
+	log = log .. `time: {os.clock()}\n`
+	log = log .. `goal: {Util.StringifyTable(self.planner.goal)}\n`
+	log = log .. `action: {Util.StringifyTable(self.planner.action)}\n`
+	log = log .. `beliefs: {Util.StringifyTable(self.planner.beliefs)}\n`
+	log = log .. `agentData: {Util.StringifyTable(self.planner.agentData)}\n`
+	log = log .. `planIndx: {Util.StringifyTable(self.planner.planIndx)}\n`
+	log = log .. `planSuccess: {Util.StringifyTable(self.planner.planSuccess)}\n`
+	log = log .. `needsReplan: {Util.StringifyTable(self.planner.needsReplan)}\n`
+	log = log .. `replanReason: {Util.StringifyTable(self.planner.replanReason)}\n`
+	log = log .. `lastFailedPlanAt: {Util.StringifyTable(self.planner.lastFailedPlanAt)}\n`
+	log = log .. `failedPlanCooldown: {Util.StringifyTable(self.planner.failedPlanCooldown)}\n`
+	log = log .. `plan: {Util.StringifyTable(self.planner.plan)}\n`
+	log = log .. `controller: {Util.StringifyTable(self.controller)}\n`
+
+	return log
 end
 
 export type Agent = typeof(setmetatable({} :: AgentData, Agent))
@@ -179,7 +207,7 @@ function Agent.new(
 	controller: SPHController.SPHController,
 	agentConfig: typeof(_DefaultAgentConfig),
 	cadenceConfig: typeof(_DefaultCadenceConfig),
-	visionDependencies: VisionSensor.Dependencies
+	agentService: any
 ): Agent
 	assert(teamId ~= "", "Agent teamId must not be empty")
 	assert(controller:GetTeamId() == teamId, "Agent teamId must match its SPHController teamId")
@@ -192,16 +220,9 @@ function Agent.new(
 
 		noisyEnemyDirection = Vector3.zero,
 		noisyObjectiveDirection = Vector3.zero,
+
 		sightedEnemyLocs = {},
 		sightedObjectiveLocs = {},
-		sightedCrouchCoverLocs = {},
-		sightedProneCoverLocs = {},
-
-		behaviourState = {
-			behaviour = "None",
-			behaviourParams = nil,
-		} :: Types.BehaviourState,
-		behaviourRequest = nil,
 
 		controller = controller,
 		vision = VisionSensor.Blank,
@@ -212,17 +233,10 @@ function Agent.new(
 		visionElapsed = cadenceConfig.VisionInterval,
 		plannerElapsed = cadenceConfig.PlannerInterval,
 
-		active = false,
-		ended = false,
+		alive = false,
 	}
 
-	agentData.vision = VisionSensor.New(
-		agentData,
-		agentData.id,
-		agentData.controller:GetModel(),
-		agentConfig.VisionDistance,
-		visionDependencies
-	)
+	agentData.vision = VisionSensor.New(agentData, agentData.id, agentData.controller:GetModel(), agentConfig.VisionDistance, agentService)
 
 	return setmetatable(agentData, Agent)
 end

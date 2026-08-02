@@ -7,7 +7,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
-local AgentService = require(CompyServerScripts.World.AgentService)
+local AgentService = require(CompyServerScripts.Services.AgentService)
 local _DefaultConfig = require(CompySharedScripts.Config)
 
 local MetricsService = {}

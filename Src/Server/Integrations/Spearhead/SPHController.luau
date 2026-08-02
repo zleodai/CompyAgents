@@ -40,7 +40,6 @@ export type AnimationNames = {
 }
 
 export type Config = {
-	modelNames: { string }?,
 	weaponName: string?,
 	magazineCapacity: number?,
 	reserveAmmo: number?,
@@ -1042,9 +1041,7 @@ function SPHController._playGaitAnimation(self: SPHController, gait: Enums.Movem
 	if self.equipped then
 		self:_playWeaponIdle(self.animationNames.idle)
 		local activeWeaponTrack = self.activeWeaponTrack
-		local weaponActionPlaying = activeWeaponTrack ~= nil
-			and activeWeaponTrack.IsPlaying
-			and activeWeaponTrack.Priority.Value >= Enum.AnimationPriority.Action.Value
+		local weaponActionPlaying = activeWeaponTrack ~= nil and activeWeaponTrack.IsPlaying and activeWeaponTrack.Priority.Value >= Enum.AnimationPriority.Action.Value
 		if not weaponActionPlaying and not self.reloading then
 			self:_restoreWeaponLoop()
 		end
@@ -1995,7 +1992,9 @@ function SPHController.new(character: Model, teamId: Team.Id, config: Config?): 
 	pathfinder.Error:Connect(function(reason: string): ()
 		self.terminalPathFailure = reason
 		character:SetAttribute("SPHPathError", reason)
-		warn(`[SPHController] NoobPath error for {character.Name}: {reason}`)
+		if reason ~= "TargetUnreachable" then
+			warn(`[SPHController] NoobPath error for {character.Name}: {reason}`)
+		end
 	end)
 	pathfinder.Trapped:Connect(function(reason: string): ()
 		self.pendingPathFailure = `Trapped:{reason}`

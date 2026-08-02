@@ -39,6 +39,7 @@
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
+        "$className": "Folder",
         "CompyAgent": {
           "$path": "Src/Client"
         }

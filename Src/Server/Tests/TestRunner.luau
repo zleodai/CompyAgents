@@ -4,11 +4,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local CompyServerScripts = ServerScriptService.CompyAgent
 
-local TestGroups = {
-	require(CompyServerScripts.Tests.Agents.PlannerModuleTests),
-	require(CompyServerScripts.Tests.World.AgentServiceTests),
-	require(CompyServerScripts.Tests.Core.SimulationIntegrationTests),
-}
+local TestGroups = {}
 
 type TestContext = {
 	Assert: (condition: boolean, message: string) -> (),

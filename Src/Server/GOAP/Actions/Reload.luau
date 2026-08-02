@@ -24,8 +24,8 @@ local function FinishedCheck(actionData: { [any]: any }, _: SPHController.SPHCon
 	return actionData.reloadCompleted
 end
 
-local function End(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	table.remove(actionData)
+local function End(actionData: { [any]: any }, _: SPHController.SPHController, _: Types.AgentSharedData): ()
+	table.clear(actionData)
 end
 
 local Action = {}
@@ -46,7 +46,7 @@ function Action.new(): Types.Action
 		Start = Start,
 		Update = nil,
 		FinishedCheck = FinishedCheck,
-		End = nil,
+		End = End,
 	}
 end
 

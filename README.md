@@ -22,9 +22,9 @@ The server reads Studio-authored instances through `CollectionService` tags
 when `Config.Simulation.UseStudioLevel` is enabled. Tag names and fallback
 behavior are configured in `Src/Shared/Config/SimulationConfig.luau`.
 
-Spawn, cover, and objective tags must be placed on `BasePart`s. Humanoid tags
-must be placed on `Model`s that contain a `Humanoid`. Invalid tagged instances
-are ignored with a warning.
+Spawn, cover, and objective tags must be placed on `BasePart`s. Room and door
+tags must be placed on `Model`s with a direct child `ModuleScript` named
+`Script`. Invalid tagged instances are ignored with a warning.
 
 ### `CompySpawn`
 
@@ -33,6 +33,7 @@ back to config-based spawn origins.
 
 | Attribute | Type | Required | Default | Behavior |
 | --- | --- | --- | --- | --- |
+| `Enabled` | boolean | No | `false` | Only enabled spawn records are returned by spawn queries. Set this to `true` for a Studio spawn that Simulation should use. |
 | `TeamId` | string | No | global | Limits the spawn to one team, such as `Blue` or `Red`. If omitted, the spawn is returned for any team query. |
 | `SpawnOrder` | number | No | `0` | Sorts spawn points within each team. Lower values are used first. Ties sort by full instance name. |
 | `SpawnRadius` | number | No | `0` | When set above `0`, bootstrap spawning picks a random horizontal position within this radius of the spawn part. |
@@ -47,7 +48,9 @@ uses it; with two spawn points, agents alternate between them.
 
 ### `CompyCover`
 
-Registered as cover locations used by Agent vision and cover behavior.
+Registered as typed cover-point metadata. Cover points are available through
+EnvironmentService queries, but the current VisionSensor and active GOAP action
+registry do not consume them.
 
 | Attribute | Type | Required | Default | Behavior |
 | --- | --- | --- | --- | --- |
@@ -64,7 +67,8 @@ form a non-zero vector. The registry normalizes that vector before storing it.
 
 ### `CompyObjective`
 
-Registered as objective locations used by Agent vision and capture behavior.
+Registered as objective locations used by Agent vision. Objective capture
+modules remain in source but are not enabled in the current GOAP registries.
 
 | Attribute | Type | Required | Default | Behavior |
 | --- | --- | --- | --- | --- |
@@ -74,17 +78,23 @@ Registered as objective locations used by Agent vision and capture behavior.
 
 The objective record also stores the part `CFrame` and `Position`.
 
-### `CompyHumanoid`
+### `CompyRoom`
 
-Registered as humanoid templates for spawned agents. Matching templates are
-cloned using their `Frequency` weights. If none match, Simulation creates a
-default R15 model.
+Registers a room Model by the string returned from `Script.GetRoom()`. The
+ModuleScript must also expose `GetAgents(): { string }`. EnvironmentService
+queries that function every Heartbeat while running to cache each observed
+agent name's current room. Missing or currently unassigned agents resolve to
+`"None"`.
 
-| Attribute | Type | Required | Default | Behavior |
-| --- | --- | --- | --- | --- |
-| `TeamId` | string | No | global | Limits the humanoid model to one team. If omitted, the model is returned for any team query. |
-| `Frequency` | number | No | `1.0` | Relative weight for how often this model should be used compared to other matching models. |
+### `CompyDoor`
 
-The tag should be applied to the humanoid `Model`, not the child `Humanoid`.
-The registry stores the model, its `Humanoid`, and its `HumanoidRootPart` when
-that root part exists.
+Registers a door Model by `Model.Name`. Its direct `Script` ModuleScript must
+expose `Open()`, `Close()`, and `GetRoom(): string`. The returned room string
+associates the door with the corresponding `CompyRoom` registration.
+
+## Agent model templates
+
+Agent models are not CollectionService registrations. `SPHAgentFactory` selects
+an R6 model name from the creating team's `Config.Teams[teamId].Models` list and
+clones that template from `Workspace.CompyAgent.Models`. The template must be an
+archivable R6 Model containing a Humanoid and the required R6 body parts.

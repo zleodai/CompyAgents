@@ -6,19 +6,21 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local CompySharedScripts = ReplicatedStorage.CompyAgent
-local _DefaultConfig = require(CompySharedScripts.Config)
+local Config = require(CompySharedScripts.Config)
 
 local EnvironmentService = {}
 EnvironmentService.__index = EnvironmentService
 
 local POSITION_EPSILON = 0.001
 local STALE_CLEANUP_INTERVAL = 1
+local NO_ROOM = "None"
 
 export type CoverPosture = "Crouching" | "Proning"
 
 export type SpawnPointRecord = {
 	part: BasePart,
 	name: string,
+	enabled: boolean,
 	teamId: string?,
 	squadId: string?,
 	spawnOrder: number,
@@ -50,6 +52,17 @@ export type ObjectiveRecord = {
 	position: Vector3,
 }
 
+export type RoomScript = {
+	GetRoom: () -> string,
+	GetAgents: () -> { string },
+}
+
+export type DoorScript = {
+	Open: () -> (),
+	Close: () -> (),
+	GetRoom: () -> string,
+}
+
 export type SpawnPointQueryOptions = {
 	teamId: string?,
 	squadId: string?,
@@ -65,9 +78,10 @@ export type ObjectiveQueryOptions = {
 }
 
 type ConnectionsByPart = { [BasePart]: { RBXScriptConnection } }
+type ConnectionsByModel = { [Model]: { RBXScriptConnection } }
 
 type EnvironmentServiceData = {
-	config: typeof(_DefaultConfig),
+	config: typeof(Config),
 	running: boolean,
 	cleanupElapsed: number,
 	nextRegistrationOrder: number,
@@ -80,9 +94,21 @@ type EnvironmentServiceData = {
 	spawnPoints: { SpawnPointRecord },
 	coverPoints: { CoverPointRecord },
 	objectives: { ObjectiveRecord },
+	rooms: { [string]: RoomScript },
+	doors: { [string]: DoorScript },
+	agentRoomsByName: { [string]: string },
+	roomScriptsByModel: { [Model]: RoomScript },
+	doorScriptsByModel: { [Model]: DoorScript },
+	roomNamesByModel: { [Model]: string },
+	doorRoomNamesByModel: { [Model]: string },
+	roomModelsByName: { [string]: Model },
+	doorModelsByName: { [string]: Model },
 	spawnConnectionsByPart: ConnectionsByPart,
 	coverConnectionsByPart: ConnectionsByPart,
 	objectiveConnectionsByPart: ConnectionsByPart,
+	roomConnectionsByModel: ConnectionsByModel,
+	doorConnectionsByModel: ConnectionsByModel,
+	registrationOrderByModel: { [Model]: number },
 }
 
 export type EnvironmentService = typeof(setmetatable({} :: EnvironmentServiceData, EnvironmentService))
@@ -92,6 +118,11 @@ type RankedRecord<T> = {
 	distanceSquared: number,
 	canonicalIndex: number,
 }
+
+local function readBoolAttribute(instance: Instance, attributeName: string): boolean
+	local value = instance:GetAttribute(attributeName)
+	return if typeof(value) == "boolean" then value else false
+end
 
 local function readStringAttribute(instance: Instance, attributeName: string): string?
 	local value = instance:GetAttribute(attributeName)
@@ -130,9 +161,7 @@ local function readCoverPosture(part: BasePart): CoverPosture
 		return "Proning"
 	end
 	if posture ~= nil and posture ~= "Crouching" then
-		warn(
-			("[CompyAgent:EnvironmentService] Invalid Posture on %s; using Crouching"):format(part:GetFullName())
-		)
+		warn(("[CompyAgent:EnvironmentService] Invalid Posture on %s; using Crouching"):format(part:GetFullName()))
 	end
 	return "Crouching"
 end
@@ -143,6 +172,10 @@ end
 
 local function isWorldPart(part: BasePart): boolean
 	return part.Parent ~= nil and part:IsDescendantOf(Workspace)
+end
+
+local function isWorldModel(model: Model): boolean
+	return model.Parent ~= nil and model:IsDescendantOf(Workspace)
 end
 
 local function validateMaxDistance(maxDistance: number): ()
@@ -168,6 +201,21 @@ local function clearPartConnections(connectionsByPart: ConnectionsByPart): ()
 	for part, connections in pairs(connectionsByPart) do
 		disconnectConnections(connections)
 		connectionsByPart[part] = nil
+	end
+end
+
+local function disconnectModelConnections(connectionsByModel: ConnectionsByModel, model: Model): ()
+	local connections = connectionsByModel[model]
+	if connections then
+		disconnectConnections(connections)
+		connectionsByModel[model] = nil
+	end
+end
+
+local function clearModelConnections(connectionsByModel: ConnectionsByModel): ()
+	for model, connections in pairs(connectionsByModel) do
+		disconnectConnections(connections)
+		connectionsByModel[model] = nil
 	end
 end
 
@@ -200,6 +248,25 @@ local function partStableLess(self: EnvironmentService, a: BasePart, b: BasePart
 		return aPosition.Z < bPosition.Z
 	end
 	return getRegistrationOrder(self, a) < getRegistrationOrder(self, b)
+end
+
+local function getModelRegistrationOrder(self: EnvironmentService, model: Model): number
+	local existing = self.registrationOrderByModel[model]
+	if existing then
+		return existing
+	end
+	self.nextRegistrationOrder += 1
+	self.registrationOrderByModel[model] = self.nextRegistrationOrder
+	return self.nextRegistrationOrder
+end
+
+local function modelStableLess(self: EnvironmentService, a: Model, b: Model): boolean
+	local aName = a:GetFullName()
+	local bName = b:GetFullName()
+	if aName ~= bName then
+		return aName < bName
+	end
+	return getModelRegistrationOrder(self, a) < getModelRegistrationOrder(self, b)
 end
 
 local function rebuildSpawnPoints(self: EnvironmentService): ()
@@ -241,11 +308,155 @@ local function rebuildObjectives(self: EnvironmentService): ()
 	end)
 end
 
+local function rebuildRooms(self: EnvironmentService): ()
+	table.clear(self.rooms)
+	table.clear(self.roomModelsByName)
+
+	local models: { Model } = {}
+	for model in pairs(self.roomScriptsByModel) do
+		table.insert(models, model)
+	end
+	table.sort(models, function(a: Model, b: Model): boolean
+		return modelStableLess(self, a, b)
+	end)
+
+	for _, model in ipairs(models) do
+		local roomName = self.roomNamesByModel[model]
+		local roomScript = self.roomScriptsByModel[model]
+		if self.rooms[roomName] == nil then
+			self.rooms[roomName] = roomScript
+			self.roomModelsByName[roomName] = model
+		else
+			warn(
+				("[CompyAgent:EnvironmentService] Duplicate room %q on %s; using %s"):format(
+					roomName,
+					model:GetFullName(),
+					self.roomModelsByName[roomName]:GetFullName()
+				)
+			)
+		end
+	end
+end
+
+local function rebuildDoors(self: EnvironmentService): ()
+	table.clear(self.doors)
+	table.clear(self.doorModelsByName)
+
+	local models: { Model } = {}
+	for model in pairs(self.doorScriptsByModel) do
+		table.insert(models, model)
+	end
+	table.sort(models, function(a: Model, b: Model): boolean
+		return modelStableLess(self, a, b)
+	end)
+
+	for _, model in ipairs(models) do
+		local doorName = model.Name
+		local doorScript = self.doorScriptsByModel[model]
+		if self.doors[doorName] == nil then
+			self.doors[doorName] = doorScript
+			self.doorModelsByName[doorName] = model
+		else
+			warn(
+				("[CompyAgent:EnvironmentService] Duplicate door model name %q on %s; using %s"):format(
+					doorName,
+					model:GetFullName(),
+					self.doorModelsByName[doorName]:GetFullName()
+				)
+			)
+		end
+	end
+end
+
 local function releaseRegistrationOrderIfUnused(self: EnvironmentService, part: BasePart): ()
 	if self.spawnPointsByPart[part] or self.coverPointsByPart[part] or self.objectivesByPart[part] then
 		return
 	end
 	self.registrationOrderByPart[part] = nil
+end
+
+local function releaseModelRegistrationOrderIfUnused(self: EnvironmentService, model: Model): ()
+	if self.roomScriptsByModel[model] or self.doorScriptsByModel[model] then
+		return
+	end
+	self.registrationOrderByModel[model] = nil
+end
+
+local function getRequiredModule(model: Model, tagName: string): ModuleScript?
+	local moduleScript = model:FindFirstChild("Script")
+	if not moduleScript or not moduleScript:IsA("ModuleScript") then
+		warn(
+			("[CompyAgent:EnvironmentService] Ignoring tagged %s without a direct ModuleScript named Script: %s"):format(
+				tagName,
+				model:GetFullName()
+			)
+		)
+		return nil
+	end
+	return moduleScript
+end
+
+local function loadRoomScript(model: Model, tagName: string): (RoomScript?, string?)
+	local moduleScript = getRequiredModule(model, tagName)
+	if not moduleScript then
+		return nil, nil
+	end
+
+	local required, value = pcall(require, moduleScript)
+	if not required or typeof(value) ~= "table" then
+		warn(("[CompyAgent:EnvironmentService] Failed to require room script %s: %s"):format(moduleScript:GetFullName(), tostring(value)))
+		return nil, nil
+	end
+
+	local untypedValue = value :: any
+	if typeof(untypedValue.GetRoom) ~= "function" or typeof(untypedValue.GetAgents) ~= "function" then
+		warn(("[CompyAgent:EnvironmentService] Room script must expose GetRoom and GetAgents: %s"):format(moduleScript:GetFullName()))
+		return nil, nil
+	end
+
+	local roomOk, roomName = pcall(untypedValue.GetRoom)
+	if not roomOk or typeof(roomName) ~= "string" or roomName == "" then
+		warn(("[CompyAgent:EnvironmentService] Room script returned an invalid room name: %s"):format(moduleScript:GetFullName()))
+		return nil, nil
+	end
+
+	local agentsOk, agents = pcall(untypedValue.GetAgents)
+	if not agentsOk or typeof(agents) ~= "table" then
+		warn(("[CompyAgent:EnvironmentService] Room script returned an invalid agent list: %s"):format(moduleScript:GetFullName()))
+		return nil, nil
+	end
+
+	return untypedValue :: RoomScript, roomName
+end
+
+local function loadDoorScript(model: Model, tagName: string): (DoorScript?, string?)
+	local moduleScript = getRequiredModule(model, tagName)
+	if not moduleScript then
+		return nil, nil
+	end
+
+	local required, value = pcall(require, moduleScript)
+	if not required or typeof(value) ~= "table" then
+		warn(("[CompyAgent:EnvironmentService] Failed to require door script %s: %s"):format(moduleScript:GetFullName(), tostring(value)))
+		return nil, nil
+	end
+
+	local untypedValue = value :: any
+	if typeof(untypedValue.Open) ~= "function"
+		or typeof(untypedValue.Close) ~= "function"
+		or typeof(untypedValue.GetRoom) ~= "function"
+	then
+		warn(("[CompyAgent:EnvironmentService] Door script must expose Open, Close, and GetRoom: %s"):format(moduleScript:GetFullName()))
+		return nil, nil
+	end
+
+	local roomOk, roomName = pcall(untypedValue.GetRoom)
+	if not roomOk or typeof(roomName) ~= "string" or roomName == "" then
+		warn(("[CompyAgent:EnvironmentService] Door script returned an invalid room name: %s"):format(moduleScript:GetFullName()))
+		return nil, nil
+	end
+
+	return untypedValue :: DoorScript, roomName
 end
 
 local function warnForDuplicateCoverId(self: EnvironmentService, record: CoverPointRecord): ()
@@ -278,13 +489,7 @@ local function warnForDuplicateObjectiveId(self: EnvironmentService, record: Obj
 	end
 end
 
-local function rankByDistance<T>(
-	records: { T },
-	origin: Vector3,
-	maxDistance: number,
-	matches: (T) -> boolean,
-	getPosition: (T) -> Vector3
-): { RankedRecord<T> }
+local function rankByDistance<T>(records: { T }, origin: Vector3, maxDistance: number, matches: (T) -> boolean, getPosition: (T) -> Vector3): { RankedRecord<T> }
 	validateMaxDistance(maxDistance)
 	local maxDistanceSquared = maxDistance * maxDistance
 	local ranked: { RankedRecord<T> } = {}
@@ -385,9 +590,12 @@ local function createSpawnConnections(self: EnvironmentService, part: BasePart):
 		table.insert(connections, part:GetAttributeChangedSignal(attributeName):Connect(refresh))
 	end
 	table.insert(connections, part.AncestryChanged:Connect(refresh))
-	table.insert(connections, part.Destroying:Connect(function(): ()
-		self:UnregisterSpawnPoint(part)
-	end))
+	table.insert(
+		connections,
+		part.Destroying:Connect(function(): ()
+			self:UnregisterSpawnPoint(part)
+		end)
+	)
 	return connections
 end
 
@@ -407,9 +615,12 @@ local function createCoverConnections(self: EnvironmentService, part: BasePart):
 		table.insert(connections, part:GetAttributeChangedSignal(attributeName):Connect(refresh))
 	end
 	table.insert(connections, part.AncestryChanged:Connect(refresh))
-	table.insert(connections, part.Destroying:Connect(function(): ()
-		self:UnregisterCoverPoint(part)
-	end))
+	table.insert(
+		connections,
+		part.Destroying:Connect(function(): ()
+			self:UnregisterCoverPoint(part)
+		end)
+	)
 	return connections
 end
 
@@ -430,9 +641,55 @@ local function createObjectiveConnections(self: EnvironmentService, part: BasePa
 		table.insert(connections, part:GetAttributeChangedSignal(attributeName):Connect(refresh))
 	end
 	table.insert(connections, part.AncestryChanged:Connect(refresh))
-	table.insert(connections, part.Destroying:Connect(function(): ()
-		self:UnregisterObjective(part)
-	end))
+	table.insert(
+		connections,
+		part.Destroying:Connect(function(): ()
+			self:UnregisterObjective(part)
+		end)
+	)
+	return connections
+end
+
+local function createRoomConnections(self: EnvironmentService, model: Model): { RBXScriptConnection }
+	local connections: { RBXScriptConnection } = {}
+	local function refresh(): ()
+		self:UnregisterRoom(model)
+		if isWorldModel(model) and CollectionService:HasTag(model, self.config.Simulation.RoomTag) then
+			self:RegisterRoom(model)
+		end
+	end
+
+	table.insert(connections, model.ChildAdded:Connect(refresh))
+	table.insert(connections, model.ChildRemoved:Connect(refresh))
+	table.insert(connections, model.AncestryChanged:Connect(refresh))
+	table.insert(
+		connections,
+		model.Destroying:Connect(function(): ()
+			self:UnregisterRoom(model)
+		end)
+	)
+	return connections
+end
+
+local function createDoorConnections(self: EnvironmentService, model: Model): { RBXScriptConnection }
+	local connections: { RBXScriptConnection } = {}
+	local function refresh(): ()
+		self:UnregisterDoor(model)
+		if isWorldModel(model) and CollectionService:HasTag(model, self.config.Simulation.DoorTag) then
+			self:RegisterDoor(model)
+		end
+	end
+
+	table.insert(connections, model:GetPropertyChangedSignal("Name"):Connect(refresh))
+	table.insert(connections, model.ChildAdded:Connect(refresh))
+	table.insert(connections, model.ChildRemoved:Connect(refresh))
+	table.insert(connections, model.AncestryChanged:Connect(refresh))
+	table.insert(
+		connections,
+		model.Destroying:Connect(function(): ()
+			self:UnregisterDoor(model)
+		end)
+	)
 	return connections
 end
 
@@ -440,13 +697,25 @@ local function clearRegistryRecords(self: EnvironmentService): ()
 	clearPartConnections(self.spawnConnectionsByPart)
 	clearPartConnections(self.coverConnectionsByPart)
 	clearPartConnections(self.objectiveConnectionsByPart)
+	clearModelConnections(self.roomConnectionsByModel)
+	clearModelConnections(self.doorConnectionsByModel)
 	table.clear(self.spawnPointsByPart)
 	table.clear(self.coverPointsByPart)
 	table.clear(self.objectivesByPart)
+	table.clear(self.roomScriptsByModel)
+	table.clear(self.doorScriptsByModel)
+	table.clear(self.roomNamesByModel)
+	table.clear(self.doorRoomNamesByModel)
 	table.clear(self.spawnPoints)
 	table.clear(self.coverPoints)
 	table.clear(self.objectives)
+	table.clear(self.rooms)
+	table.clear(self.doors)
+	table.clear(self.roomModelsByName)
+	table.clear(self.doorModelsByName)
+	table.clear(self.agentRoomsByName)
 	table.clear(self.registrationOrderByPart)
+	table.clear(self.registrationOrderByModel)
 	self.nextRegistrationOrder = 0
 end
 
@@ -463,18 +732,17 @@ local function sortedTaggedInstances(tagName: string): { Instance }
 	return instances
 end
 
-local function registerTaggedPart(
-	instance: Instance,
-	tagName: string,
-	register: (BasePart) -> ()
-): ()
+local function registerTaggedPart(instance: Instance, tagName: string, register: (BasePart) -> ()): ()
 	if not instance:IsA("BasePart") then
-		warn(
-			("[CompyAgent:EnvironmentService] Ignoring non-BasePart tagged %s: %s"):format(
-				tagName,
-				instance:GetFullName()
-			)
-		)
+		warn(("[CompyAgent:EnvironmentService] Ignoring non-BasePart tagged %s: %s"):format(tagName, instance:GetFullName()))
+		return
+	end
+	register(instance)
+end
+
+local function registerTaggedModel(instance: Instance, tagName: string, register: (Model) -> ()): ()
+	if not instance:IsA("Model") then
+		warn(("[CompyAgent:EnvironmentService] Ignoring non-Model tagged %s: %s"):format(tagName, instance:GetFullName()))
 		return
 	end
 	register(instance)
@@ -501,6 +769,16 @@ local function refreshRegistries(self: EnvironmentService): ()
 			self:RegisterObjective(part)
 		end)
 	end
+	for _, instance in ipairs(sortedTaggedInstances(self.config.Simulation.RoomTag)) do
+		registerTaggedModel(instance, self.config.Simulation.RoomTag, function(model: Model): ()
+			self:RegisterRoom(model)
+		end)
+	end
+	for _, instance in ipairs(sortedTaggedInstances(self.config.Simulation.DoorTag)) do
+		registerTaggedModel(instance, self.config.Simulation.DoorTag, function(model: Model): ()
+			self:RegisterDoor(model)
+		end)
+	end
 end
 
 local function connectTagListeners(self: EnvironmentService): ()
@@ -511,39 +789,93 @@ local function connectTagListeners(self: EnvironmentService): ()
 	local spawnTag = self.config.Simulation.SpawnTag
 	local coverTag = self.config.Simulation.CoverTag
 	local objectiveTag = self.config.Simulation.ObjectiveTag
+	local roomTag = self.config.Simulation.RoomTag
+	local doorTag = self.config.Simulation.DoorTag
 
-	table.insert(self.tagConnections, CollectionService:GetInstanceAddedSignal(spawnTag):Connect(function(instance: Instance): ()
-		registerTaggedPart(instance, spawnTag, function(part: BasePart): ()
-			self:RegisterSpawnPoint(part)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceAddedSignal(spawnTag):Connect(function(instance: Instance): ()
+			registerTaggedPart(instance, spawnTag, function(part: BasePart): ()
+				self:RegisterSpawnPoint(part)
+			end)
 		end)
-	end))
-	table.insert(self.tagConnections, CollectionService:GetInstanceRemovedSignal(spawnTag):Connect(function(instance: Instance): ()
-		if instance:IsA("BasePart") then
-			self:UnregisterSpawnPoint(instance)
-		end
-	end))
+	)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceRemovedSignal(spawnTag):Connect(function(instance: Instance): ()
+			if instance:IsA("BasePart") then
+				self:UnregisterSpawnPoint(instance)
+			end
+		end)
+	)
 
-	table.insert(self.tagConnections, CollectionService:GetInstanceAddedSignal(coverTag):Connect(function(instance: Instance): ()
-		registerTaggedPart(instance, coverTag, function(part: BasePart): ()
-			self:RegisterCoverPoint(part)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceAddedSignal(coverTag):Connect(function(instance: Instance): ()
+			registerTaggedPart(instance, coverTag, function(part: BasePart): ()
+				self:RegisterCoverPoint(part)
+			end)
 		end)
-	end))
-	table.insert(self.tagConnections, CollectionService:GetInstanceRemovedSignal(coverTag):Connect(function(instance: Instance): ()
-		if instance:IsA("BasePart") then
-			self:UnregisterCoverPoint(instance)
-		end
-	end))
+	)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceRemovedSignal(coverTag):Connect(function(instance: Instance): ()
+			if instance:IsA("BasePart") then
+				self:UnregisterCoverPoint(instance)
+			end
+		end)
+	)
 
-	table.insert(self.tagConnections, CollectionService:GetInstanceAddedSignal(objectiveTag):Connect(function(instance: Instance): ()
-		registerTaggedPart(instance, objectiveTag, function(part: BasePart): ()
-			self:RegisterObjective(part)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceAddedSignal(objectiveTag):Connect(function(instance: Instance): ()
+			registerTaggedPart(instance, objectiveTag, function(part: BasePart): ()
+				self:RegisterObjective(part)
+			end)
 		end)
-	end))
-	table.insert(self.tagConnections, CollectionService:GetInstanceRemovedSignal(objectiveTag):Connect(function(instance: Instance): ()
-		if instance:IsA("BasePart") then
-			self:UnregisterObjective(instance)
-		end
-	end))
+	)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceRemovedSignal(objectiveTag):Connect(function(instance: Instance): ()
+			if instance:IsA("BasePart") then
+				self:UnregisterObjective(instance)
+			end
+		end)
+	)
+
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceAddedSignal(roomTag):Connect(function(instance: Instance): ()
+			registerTaggedModel(instance, roomTag, function(model: Model): ()
+				self:RegisterRoom(model)
+			end)
+		end)
+	)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceRemovedSignal(roomTag):Connect(function(instance: Instance): ()
+			if instance:IsA("Model") then
+				self:UnregisterRoom(instance)
+			end
+		end)
+	)
+
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceAddedSignal(doorTag):Connect(function(instance: Instance): ()
+			registerTaggedModel(instance, doorTag, function(model: Model): ()
+				self:RegisterDoor(model)
+			end)
+		end)
+	)
+	table.insert(
+		self.tagConnections,
+		CollectionService:GetInstanceRemovedSignal(doorTag):Connect(function(instance: Instance): ()
+			if instance:IsA("Model") then
+				self:UnregisterDoor(instance)
+			end
+		end)
+	)
 end
 
 function EnvironmentService.RegisterSpawnPoint(self: EnvironmentService, part: BasePart): SpawnPointRecord?
@@ -556,6 +888,7 @@ function EnvironmentService.RegisterSpawnPoint(self: EnvironmentService, part: B
 	local record: SpawnPointRecord = {
 		part = part,
 		name = part.Name,
+		enabled = readBoolAttribute(part, "Enabled"),
 		teamId = readStringAttribute(part, "TeamId"),
 		squadId = readStringAttribute(part, "SquadId"),
 		spawnOrder = readNumberAttribute(part, "SpawnOrder", 0),
@@ -666,12 +999,83 @@ function EnvironmentService.UnregisterObjective(self: EnvironmentService, part: 
 	return true
 end
 
-function EnvironmentService.QueryAllSpawnPoints(
-	self: EnvironmentService,
-	options: SpawnPointQueryOptions?
-): { SpawnPointRecord }
+function EnvironmentService.RegisterRoom(self: EnvironmentService, model: Model): RoomScript?
+	if not isWorldModel(model) then
+		warn(("[CompyAgent:EnvironmentService] Cannot register room outside Workspace: %s"):format(model:GetFullName()))
+		return nil
+	end
+
+	local roomScript, roomName = loadRoomScript(model, self.config.Simulation.RoomTag)
+	if not roomScript or not roomName then
+		self:UnregisterRoom(model)
+		return nil
+	end
+
+	getModelRegistrationOrder(self, model)
+	local isNew = self.roomScriptsByModel[model] == nil
+	self.roomScriptsByModel[model] = roomScript
+	self.roomNamesByModel[model] = roomName
+	if isNew then
+		self.roomConnectionsByModel[model] = createRoomConnections(self, model)
+	end
+	rebuildRooms(self)
+	return roomScript
+end
+
+function EnvironmentService.UnregisterRoom(self: EnvironmentService, model: Model): boolean
+	if self.roomScriptsByModel[model] == nil then
+		return false
+	end
+	self.roomScriptsByModel[model] = nil
+	self.roomNamesByModel[model] = nil
+	disconnectModelConnections(self.roomConnectionsByModel, model)
+	releaseModelRegistrationOrderIfUnused(self, model)
+	rebuildRooms(self)
+	return true
+end
+
+function EnvironmentService.RegisterDoor(self: EnvironmentService, model: Model): DoorScript?
+	if not isWorldModel(model) then
+		warn(("[CompyAgent:EnvironmentService] Cannot register door outside Workspace: %s"):format(model:GetFullName()))
+		return nil
+	end
+
+	local doorScript, roomName = loadDoorScript(model, self.config.Simulation.DoorTag)
+	if not doorScript or not roomName then
+		self:UnregisterDoor(model)
+		return nil
+	end
+
+	getModelRegistrationOrder(self, model)
+	local isNew = self.doorScriptsByModel[model] == nil
+	self.doorScriptsByModel[model] = doorScript
+	self.doorRoomNamesByModel[model] = roomName
+	if isNew then
+		self.doorConnectionsByModel[model] = createDoorConnections(self, model)
+	end
+	rebuildDoors(self)
+	return doorScript
+end
+
+function EnvironmentService.UnregisterDoor(self: EnvironmentService, model: Model): boolean
+	if self.doorScriptsByModel[model] == nil then
+		return false
+	end
+	self.doorScriptsByModel[model] = nil
+	self.doorRoomNamesByModel[model] = nil
+	disconnectModelConnections(self.doorConnectionsByModel, model)
+	releaseModelRegistrationOrderIfUnused(self, model)
+	rebuildDoors(self)
+	return true
+end
+
+function EnvironmentService.QueryAllSpawnPoints(self: EnvironmentService, options: SpawnPointQueryOptions?): { SpawnPointRecord }
 	local result: { SpawnPointRecord } = {}
 	for _, record in ipairs(self.spawnPoints) do
+		if not record.enabled then
+			continue
+		end
+
 		if matchesSpawnOptions(record, options) then
 			table.insert(result, record)
 		end
@@ -679,23 +1083,12 @@ function EnvironmentService.QueryAllSpawnPoints(
 	return result
 end
 
-function EnvironmentService.QuerySpawnPointsByDistance(
-	self: EnvironmentService,
-	origin: Vector3,
-	maxDistance: number,
-	options: SpawnPointQueryOptions?
-): { SpawnPointRecord }
-	return recordsFromRanked(rankByDistance(
-		self.spawnPoints,
-		origin,
-		maxDistance,
-		function(record: SpawnPointRecord): boolean
-			return matchesSpawnOptions(record, options)
-		end,
-		function(record: SpawnPointRecord): Vector3
-			return record.position
-		end
-	))
+function EnvironmentService.QuerySpawnPointsByDistance(self: EnvironmentService, origin: Vector3, maxDistance: number, options: SpawnPointQueryOptions?): { SpawnPointRecord }
+	return recordsFromRanked(rankByDistance(self.spawnPoints, origin, maxDistance, function(record: SpawnPointRecord): boolean
+		return matchesSpawnOptions(record, options)
+	end, function(record: SpawnPointRecord): Vector3
+		return record.position
+	end))
 end
 
 function EnvironmentService.QuerySpawnPointsByRaycast(
@@ -705,27 +1098,16 @@ function EnvironmentService.QuerySpawnPointsByRaycast(
 	raycastParams: RaycastParams?,
 	options: SpawnPointQueryOptions?
 ): { SpawnPointRecord }
-	return queryByRaycast(
-		self.spawnPoints,
-		origin,
-		maxDistance,
-		raycastParams,
-		function(record: SpawnPointRecord): boolean
-			return matchesSpawnOptions(record, options)
-		end,
-		function(record: SpawnPointRecord): BasePart
-			return record.part
-		end,
-		function(record: SpawnPointRecord): Vector3
-			return record.position
-		end
-	)
+	return queryByRaycast(self.spawnPoints, origin, maxDistance, raycastParams, function(record: SpawnPointRecord): boolean
+		return matchesSpawnOptions(record, options)
+	end, function(record: SpawnPointRecord): BasePart
+		return record.part
+	end, function(record: SpawnPointRecord): Vector3
+		return record.position
+	end)
 end
 
-function EnvironmentService.QueryAllCoverPoints(
-	self: EnvironmentService,
-	options: CoverPointQueryOptions?
-): { CoverPointRecord }
+function EnvironmentService.QueryAllCoverPoints(self: EnvironmentService, options: CoverPointQueryOptions?): { CoverPointRecord }
 	local result: { CoverPointRecord } = {}
 	for _, record in ipairs(self.coverPoints) do
 		if matchesCoverOptions(record, options) then
@@ -735,23 +1117,12 @@ function EnvironmentService.QueryAllCoverPoints(
 	return result
 end
 
-function EnvironmentService.QueryCoverPointsByDistance(
-	self: EnvironmentService,
-	origin: Vector3,
-	maxDistance: number,
-	options: CoverPointQueryOptions?
-): { CoverPointRecord }
-	return recordsFromRanked(rankByDistance(
-		self.coverPoints,
-		origin,
-		maxDistance,
-		function(record: CoverPointRecord): boolean
-			return matchesCoverOptions(record, options)
-		end,
-		function(record: CoverPointRecord): Vector3
-			return record.position
-		end
-	))
+function EnvironmentService.QueryCoverPointsByDistance(self: EnvironmentService, origin: Vector3, maxDistance: number, options: CoverPointQueryOptions?): { CoverPointRecord }
+	return recordsFromRanked(rankByDistance(self.coverPoints, origin, maxDistance, function(record: CoverPointRecord): boolean
+		return matchesCoverOptions(record, options)
+	end, function(record: CoverPointRecord): Vector3
+		return record.position
+	end))
 end
 
 function EnvironmentService.QueryCoverPointsByRaycast(
@@ -761,27 +1132,16 @@ function EnvironmentService.QueryCoverPointsByRaycast(
 	raycastParams: RaycastParams?,
 	options: CoverPointQueryOptions?
 ): { CoverPointRecord }
-	return queryByRaycast(
-		self.coverPoints,
-		origin,
-		maxDistance,
-		raycastParams,
-		function(record: CoverPointRecord): boolean
-			return matchesCoverOptions(record, options)
-		end,
-		function(record: CoverPointRecord): BasePart
-			return record.part
-		end,
-		function(record: CoverPointRecord): Vector3
-			return record.position
-		end
-	)
+	return queryByRaycast(self.coverPoints, origin, maxDistance, raycastParams, function(record: CoverPointRecord): boolean
+		return matchesCoverOptions(record, options)
+	end, function(record: CoverPointRecord): BasePart
+		return record.part
+	end, function(record: CoverPointRecord): Vector3
+		return record.position
+	end)
 end
 
-function EnvironmentService.QueryAllObjectives(
-	self: EnvironmentService,
-	options: ObjectiveQueryOptions?
-): { ObjectiveRecord }
+function EnvironmentService.QueryAllObjectives(self: EnvironmentService, options: ObjectiveQueryOptions?): { ObjectiveRecord }
 	local result: { ObjectiveRecord } = {}
 	for _, record in ipairs(self.objectives) do
 		if matchesObjectiveOptions(record, options) then
@@ -791,23 +1151,12 @@ function EnvironmentService.QueryAllObjectives(
 	return result
 end
 
-function EnvironmentService.QueryObjectivesByDistance(
-	self: EnvironmentService,
-	origin: Vector3,
-	maxDistance: number,
-	options: ObjectiveQueryOptions?
-): { ObjectiveRecord }
-	return recordsFromRanked(rankByDistance(
-		self.objectives,
-		origin,
-		maxDistance,
-		function(record: ObjectiveRecord): boolean
-			return matchesObjectiveOptions(record, options)
-		end,
-		function(record: ObjectiveRecord): Vector3
-			return record.position
-		end
-	))
+function EnvironmentService.QueryObjectivesByDistance(self: EnvironmentService, origin: Vector3, maxDistance: number, options: ObjectiveQueryOptions?): { ObjectiveRecord }
+	return recordsFromRanked(rankByDistance(self.objectives, origin, maxDistance, function(record: ObjectiveRecord): boolean
+		return matchesObjectiveOptions(record, options)
+	end, function(record: ObjectiveRecord): Vector3
+		return record.position
+	end))
 end
 
 function EnvironmentService.QueryObjectivesByRaycast(
@@ -817,27 +1166,75 @@ function EnvironmentService.QueryObjectivesByRaycast(
 	raycastParams: RaycastParams?,
 	options: ObjectiveQueryOptions?
 ): { ObjectiveRecord }
-	return queryByRaycast(
-		self.objectives,
-		origin,
-		maxDistance,
-		raycastParams,
-		function(record: ObjectiveRecord): boolean
-			return matchesObjectiveOptions(record, options)
-		end,
-		function(record: ObjectiveRecord): BasePart
-			return record.part
-		end,
-		function(record: ObjectiveRecord): Vector3
-			return record.position
+	return queryByRaycast(self.objectives, origin, maxDistance, raycastParams, function(record: ObjectiveRecord): boolean
+		return matchesObjectiveOptions(record, options)
+	end, function(record: ObjectiveRecord): BasePart
+		return record.part
+	end, function(record: ObjectiveRecord): Vector3
+		return record.position
+	end)
+end
+
+function EnvironmentService.QueryAllRooms(self: EnvironmentService): { [string]: RoomScript }
+	return table.clone(self.rooms)
+end
+
+function EnvironmentService.QueryAllDoors(self: EnvironmentService): { [string]: DoorScript }
+	return table.clone(self.doors)
+end
+
+function EnvironmentService.GetAgentsInRoom(self: EnvironmentService, roomName: string): { string }
+	local roomScript = self.rooms[roomName]
+	if not roomScript then
+		return {}
+	end
+	return roomScript.GetAgents()
+end
+
+function EnvironmentService.GetAgentRoom(self: EnvironmentService, agentName: string): string
+	return self.agentRoomsByName[agentName] or NO_ROOM
+end
+
+function EnvironmentService.IsAgentInRoom(self: EnvironmentService, agentName: string): boolean
+	return self:GetAgentRoom(agentName) ~= NO_ROOM
+end
+
+function EnvironmentService.GetRoomDoors(self: EnvironmentService, roomName: string): { [string]: DoorScript }
+	local result: { [string]: DoorScript } = {}
+	for doorName, doorScript in pairs(self.doors) do
+		local model = self.doorModelsByName[doorName]
+		if self.doorRoomNamesByModel[model] == roomName then
+			result[doorName] = doorScript
 		end
-	)
+	end
+	return result
+end
+
+local function updateAgentRooms(self: EnvironmentService): ()
+	for agentName in pairs(self.agentRoomsByName) do
+		self.agentRoomsByName[agentName] = NO_ROOM
+	end
+
+	local roomNames: { string } = {}
+	for roomName in pairs(self.rooms) do
+		table.insert(roomNames, roomName)
+	end
+	table.sort(roomNames)
+
+	for _, roomName in ipairs(roomNames) do
+		for _, agentName in pairs(self:GetAgentsInRoom(roomName)) do
+			if self.agentRoomsByName[agentName] == nil or self.agentRoomsByName[agentName] == NO_ROOM then
+				self.agentRoomsByName[agentName] = roomName
+			end
+		end
+	end
 end
 
 function EnvironmentService.Update(self: EnvironmentService, deltaTime: number): ()
 	if not self.running then
 		return
 	end
+	updateAgentRooms(self)
 	self.cleanupElapsed += math.max(0, deltaTime)
 	if self.cleanupElapsed < STALE_CLEANUP_INTERVAL then
 		return
@@ -847,6 +1244,8 @@ function EnvironmentService.Update(self: EnvironmentService, deltaTime: number):
 	local staleSpawnPoints: { BasePart } = {}
 	local staleCoverPoints: { BasePart } = {}
 	local staleObjectives: { BasePart } = {}
+	local staleRooms: { Model } = {}
+	local staleDoors: { Model } = {}
 	for part in pairs(self.spawnPointsByPart) do
 		if not isWorldPart(part) then
 			table.insert(staleSpawnPoints, part)
@@ -862,6 +1261,16 @@ function EnvironmentService.Update(self: EnvironmentService, deltaTime: number):
 			table.insert(staleObjectives, part)
 		end
 	end
+	for model in pairs(self.roomScriptsByModel) do
+		if not isWorldModel(model) then
+			table.insert(staleRooms, model)
+		end
+	end
+	for model in pairs(self.doorScriptsByModel) do
+		if not isWorldModel(model) then
+			table.insert(staleDoors, model)
+		end
+	end
 	for _, part in ipairs(staleSpawnPoints) do
 		self:UnregisterSpawnPoint(part)
 	end
@@ -870,6 +1279,12 @@ function EnvironmentService.Update(self: EnvironmentService, deltaTime: number):
 	end
 	for _, part in ipairs(staleObjectives) do
 		self:UnregisterObjective(part)
+	end
+	for _, model in ipairs(staleRooms) do
+		self:UnregisterRoom(model)
+	end
+	for _, model in ipairs(staleDoors) do
+		self:UnregisterDoor(model)
 	end
 end
 
@@ -910,25 +1325,35 @@ function EnvironmentService.End(self: EnvironmentService): ()
 	clearRegistryRecords(self)
 end
 
-function EnvironmentService.new(config: typeof(_DefaultConfig)): EnvironmentService
-	return setmetatable({
-		config = config,
-		running = false,
-		cleanupElapsed = 0,
-		nextRegistrationOrder = 0,
-		heartbeatConnection = nil,
-		tagConnections = {},
-		registrationOrderByPart = {},
-		spawnPointsByPart = {},
-		coverPointsByPart = {},
-		objectivesByPart = {},
-		spawnPoints = {},
-		coverPoints = {},
-		objectives = {},
-		spawnConnectionsByPart = {},
-		coverConnectionsByPart = {},
-		objectiveConnectionsByPart = {},
-	}, EnvironmentService)
-end
+local singleton: EnvironmentService = setmetatable({
+	config = Config,
+	running = false,
+	cleanupElapsed = 0,
+	nextRegistrationOrder = 0,
+	heartbeatConnection = nil,
+	tagConnections = {},
+	registrationOrderByPart = {},
+	spawnPointsByPart = {},
+	coverPointsByPart = {},
+	objectivesByPart = {},
+	spawnPoints = {},
+	coverPoints = {},
+	objectives = {},
+	rooms = {},
+	doors = {},
+	agentRoomsByName = {},
+	roomScriptsByModel = {},
+	doorScriptsByModel = {},
+	roomNamesByModel = {},
+	doorRoomNamesByModel = {},
+	roomModelsByName = {},
+	doorModelsByName = {},
+	spawnConnectionsByPart = {},
+	coverConnectionsByPart = {},
+	objectiveConnectionsByPart = {},
+	roomConnectionsByModel = {},
+	doorConnectionsByModel = {},
+	registrationOrderByModel = {},
+}, EnvironmentService)
 
-return EnvironmentService
+return singleton

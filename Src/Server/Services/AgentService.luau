@@ -8,7 +8,11 @@ local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
 local Agent = require(CompyServerScripts.Agents.Agent)
+local EnvironmentService = require(CompyServerScripts.Services.EnvironmentService)
 local Team = require(CompySharedScripts.Team)
+local SPHAgentFactory = require(CompyServerScripts.Integrations.Spearhead.SPHAgentFactory)
+
+local Configs = require(CompySharedScripts.Config)
 
 local AgentService = {}
 AgentService.__index = AgentService
@@ -16,10 +20,6 @@ AgentService.__index = AgentService
 local DEFAULT_POSITION_UPDATE_INTERVAL = 0.1
 
 export type AgentId = number
-
-export type Config = {
-	PositionUpdateInterval: number?,
-}
 
 export type NearbyAgent = {
 	id: AgentId,
@@ -40,12 +40,13 @@ type AgentServiceData = {
 	positionUpdateInterval: number,
 	updateElapsed: number,
 	running: boolean,
-	heartbeatConnection: RBXScriptConnection?,
+	updateHeartbeat: RBXScriptConnection?,
+	nextAgentId: number,
 	idByAgent: { [Agent.Agent]: AgentId },
-	agentById: { [AgentId]: Agent.Agent },
-	teamIdById: { [AgentId]: Team.Id },
-	lastRecordedPositionById: { [AgentId]: Vector3 },
-	lifecycleById: { [AgentId]: LifecycleConnections },
+	agents: { [AgentId]: Agent.Agent },
+	agentTeams: { [AgentId]: Team.Id },
+	agentPositions: { [AgentId]: Vector3 },
+	agentLifeCycles: { [AgentId]: LifecycleConnections },
 }
 
 export type AgentService = typeof(setmetatable({} :: AgentServiceData, AgentService))
@@ -83,22 +84,71 @@ local function getLiveAgentModel(agent: Agent.Agent): (Humanoid?, Model?)
 end
 
 local function removeById(self: AgentService, id: AgentId, expectedAgent: Agent.Agent): boolean
-	if self.agentById[id] ~= expectedAgent then
+	if self.agents[id] ~= expectedAgent then
 		return false
 	end
 
-	self.agentById[id] = nil
+	self.agents[id] = nil
 	self.idByAgent[expectedAgent] = nil
-	self.teamIdById[id] = nil
-	self.lastRecordedPositionById[id] = nil
+	self.agentTeams[id] = nil
+	self.agentPositions[id] = nil
 
-	local lifecycle = self.lifecycleById[id]
-	self.lifecycleById[id] = nil
+	local lifecycle = self.agentLifeCycles[id]
+	self.agentLifeCycles[id] = nil
 	if lifecycle then
 		disconnectLifecycle(lifecycle)
 	end
 
 	return true
+end
+
+local function registerAgent(self: AgentService, agent: Agent.Agent, teamId: Team.Id): AgentId?
+	Team.AssertKnown(self.teams, teamId)
+	assert(agent.teamId == teamId, "AgentService registration teamId must match Agent.teamId")
+
+	local id = agent.id
+
+	local humanoid, model = getLiveAgentModel(agent)
+	if not humanoid or not model then
+		return nil
+	end
+
+	self.idByAgent[agent] = id
+	self.agents[id] = agent
+	self.agentTeams[id] = teamId
+	self.agentPositions[id] = model:GetPivot().Position
+
+	local lifecycle: LifecycleConnections = {
+		diedConnection = nil,
+		humanoidDestroyingConnection = nil,
+		modelDestroyingConnection = nil,
+	}
+	self.agentLifeCycles[id] = lifecycle
+
+	lifecycle.diedConnection = humanoid.Died:Connect(function(): ()
+		removeById(self, id, agent)
+	end)
+	lifecycle.humanoidDestroyingConnection = humanoid.Destroying:Connect(function(): ()
+		removeById(self, id, agent)
+	end)
+	lifecycle.modelDestroyingConnection = model.Destroying:Connect(function(): ()
+		removeById(self, id, agent)
+	end)
+
+	return id
+end
+
+function AgentService.CreateAgent(self: AgentService, spawnCFrame: CFrame, config: SPHAgentFactory.AgentConfig): Agent.Agent
+	local agentId = self.nextAgentId
+	self.nextAgentId += 1
+
+	local agentName = `Agent{agentId}`
+
+	local controller = SPHAgentFactory.Create(agentName, spawnCFrame, config)
+	local agent = Agent.new(agentId, config.teamId, controller, Configs.Agent, Configs.Cadence, self)
+
+	registerAgent(self, agent, config.teamId)
+	return agent
 end
 
 function AgentService.Start(self: AgentService): ()
@@ -108,7 +158,7 @@ function AgentService.Start(self: AgentService): ()
 
 	self.running = true
 	self.updateElapsed = 0
-	self.heartbeatConnection = RunService.Heartbeat:Connect(function(deltaTime: number): ()
+	self.updateHeartbeat = RunService.Heartbeat:Connect(function(deltaTime: number): ()
 		self:Update(deltaTime)
 	end)
 end
@@ -126,10 +176,10 @@ function AgentService.Update(self: AgentService, deltaTime: number): ()
 	self.updateElapsed = self.updateElapsed % self.positionUpdateInterval
 
 	local staleAgents: { { id: AgentId, agent: Agent.Agent } } = {}
-	for id, agent in pairs(self.agentById) do
+	for id, agent in pairs(self.agents) do
 		local _, model = getLiveAgentModel(agent)
-		if model then
-			self.lastRecordedPositionById[id] = model:GetPivot().Position
+		if model and agent.alive then
+			self.agentPositions[id] = model:GetPivot().Position
 		else
 			table.insert(staleAgents, {
 				id = id,
@@ -147,79 +197,20 @@ function AgentService.End(self: AgentService): ()
 	self.running = false
 	self.updateElapsed = 0
 
-	if self.heartbeatConnection then
-		self.heartbeatConnection:Disconnect()
-		self.heartbeatConnection = nil
+	if self.updateHeartbeat then
+		self.updateHeartbeat:Disconnect()
+		self.updateHeartbeat = nil
 	end
 
-	for _, lifecycle in pairs(self.lifecycleById) do
+	for _, lifecycle in pairs(self.agentLifeCycles) do
 		disconnectLifecycle(lifecycle)
 	end
 
-	table.clear(self.lifecycleById)
-	table.clear(self.lastRecordedPositionById)
-	table.clear(self.teamIdById)
-	table.clear(self.agentById)
+	table.clear(self.agentLifeCycles)
+	table.clear(self.agentPositions)
+	table.clear(self.agentTeams)
+	table.clear(self.agents)
 	table.clear(self.idByAgent)
-end
-
-function AgentService.Register(self: AgentService, agent: Agent.Agent, teamId: Team.Id): AgentId?
-	Team.AssertKnown(self.teams, teamId)
-	assert(agent.teamId == teamId, "AgentService registration teamId must match Agent.teamId")
-
-	local existingId = self.idByAgent[agent]
-	if existingId then
-		assert(existingId == agent.id, "A registered Agent's id must not change")
-		assert(self.teamIdById[existingId] == teamId, "A registered Agent's teamId must not change")
-		local _, existingModel = getLiveAgentModel(agent)
-		if existingModel then
-			return existingId
-		end
-		removeById(self, existingId, agent)
-		return nil
-	end
-
-	local id = agent.id
-	assert(isFiniteNumber(id) and id > 0 and id % 1 == 0, "Agent.id must be a positive integer")
-	local conflictingAgent = self.agentById[id]
-	assert(conflictingAgent == nil, `Agent id {id} is already registered to a different Agent`)
-
-	local humanoid, model = getLiveAgentModel(agent)
-	if not humanoid or not model then
-		return nil
-	end
-
-	self.idByAgent[agent] = id
-	self.agentById[id] = agent
-	self.teamIdById[id] = teamId
-	self.lastRecordedPositionById[id] = model:GetPivot().Position
-
-	local lifecycle: LifecycleConnections = {
-		diedConnection = nil,
-		humanoidDestroyingConnection = nil,
-		modelDestroyingConnection = nil,
-	}
-	self.lifecycleById[id] = lifecycle
-
-	lifecycle.diedConnection = humanoid.Died:Connect(function(): ()
-		removeById(self, id, agent)
-	end)
-	lifecycle.humanoidDestroyingConnection = humanoid.Destroying:Connect(function(): ()
-		removeById(self, id, agent)
-	end)
-	lifecycle.modelDestroyingConnection = model.Destroying:Connect(function(): ()
-		removeById(self, id, agent)
-	end)
-
-	return id
-end
-
-function AgentService.Unregister(self: AgentService, agent: Agent.Agent): boolean
-	local id = self.idByAgent[agent]
-	if not id then
-		return false
-	end
-	return removeById(self, id, agent)
 end
 
 function AgentService.GetId(self: AgentService, agent: Agent.Agent): AgentId?
@@ -227,31 +218,38 @@ function AgentService.GetId(self: AgentService, agent: Agent.Agent): AgentId?
 end
 
 function AgentService.GetAgent(self: AgentService, id: AgentId): Agent.Agent?
-	return self.agentById[id]
+	return self.agents[id]
+end
+
+function AgentService.GetAgentByName(self: AgentService, name: string): Agent.Agent?
+	for _, agent in self.agents do
+		local agentName = agent.controller:GetModel().Name
+
+		if agentName ~= nil and agentName == name then
+			return agent
+		end
+	end
+
+	return nil
 end
 
 function AgentService.GetTeamId(self: AgentService, id: AgentId): Team.Id?
-	return self.teamIdById[id]
+	return self.agentTeams[id]
 end
 
 function AgentService.GetLastRecordedPosition(self: AgentService, id: AgentId): Vector3?
-	return self.lastRecordedPositionById[id]
+	return self.agentPositions[id]
 end
 
-local function getNearbyAgents(
-	self: AgentService,
-	origin: Vector3,
-	radius: number,
-	include: (id: AgentId, teamId: Team.Id, agent: Agent.Agent) -> boolean
-): { NearbyAgent }
+local function getNearbyAgents(self: AgentService, origin: Vector3, radius: number, include: (id: AgentId, teamId: Team.Id, agent: Agent.Agent) -> boolean): { NearbyAgent }
 	assert(isFiniteVector3(origin), "AgentService query origin must be finite")
 	assert(isFiniteNumber(radius) and radius >= 0, "AgentService query radius must be a finite nonnegative number")
 	local radiusSquared = radius * radius
 	local nearbyAgents: { NearbyAgent } = {}
 	local staleAgents: { { id: AgentId, agent: Agent.Agent } } = {}
-	for id, position in pairs(self.lastRecordedPositionById) do
-		local agent = self.agentById[id]
-		local teamId = self.teamIdById[id]
+	for id, position in pairs(self.agentPositions) do
+		local agent = self.agents[id]
+		local teamId = self.agentTeams[id]
 		if agent and teamId then
 			local _, model = getLiveAgentModel(agent)
 			if not model then
@@ -286,30 +284,16 @@ local function getNearbyAgents(
 	return nearbyAgents
 end
 
-function AgentService.GetNearbyAgents(
-	self: AgentService,
-	origin: Vector3,
-	radius: number,
-	excludeAgent: Agent.Agent?
-): { NearbyAgent }
+function AgentService.GetNearbyAgents(self: AgentService, origin: Vector3, radius: number, excludeAgent: Agent.Agent?): { NearbyAgent }
 	return getNearbyAgents(self, origin, radius, function(_id: AgentId, _teamId: Team.Id, agent: Agent.Agent): boolean
 		return agent ~= excludeAgent
 	end)
 end
 
-function AgentService.GetNearbyEnemyAgents(
-	self: AgentService,
-	queryingTeamId: Team.Id,
-	origin: Vector3,
-	radius: number,
-	excludeAgentId: AgentId?
-): { NearbyAgent }
+function AgentService.GetNearbyEnemyAgents(self: AgentService, queryingTeamId: Team.Id, origin: Vector3, radius: number, excludeAgentId: AgentId?): { NearbyAgent }
 	Team.AssertKnown(self.teams, queryingTeamId)
 	if excludeAgentId ~= nil then
-		assert(
-			isFiniteNumber(excludeAgentId) and excludeAgentId > 0 and excludeAgentId % 1 == 0,
-			"AgentService.GetNearbyEnemyAgents excludeAgentId must be a positive integer"
-		)
+		assert(isFiniteNumber(excludeAgentId) and excludeAgentId > 0 and excludeAgentId % 1 == 0, "AgentService.GetNearbyEnemyAgents excludeAgentId must be a positive integer")
 	end
 
 	return getNearbyAgents(self, origin, radius, function(id: AgentId, teamId: Team.Id, _agent: Agent.Agent): boolean
@@ -317,13 +301,7 @@ function AgentService.GetNearbyEnemyAgents(
 	end)
 end
 
-function AgentService.GetNearbyAgentHeads(
-	self: AgentService,
-	queryingTeamId: Team.Id,
-	origin: Vector3,
-	radius: number,
-	excludeAgentId: AgentId?
-): { BasePart }
+function AgentService.GetNearbyAgentHeads(self: AgentService, queryingTeamId: Team.Id, origin: Vector3, radius: number, excludeAgentId: AgentId?): { BasePart }
 	local nearbyEnemies = self:GetNearbyEnemyAgents(queryingTeamId, origin, radius, excludeAgentId)
 	local heads: { BasePart } = {}
 
@@ -339,28 +317,22 @@ function AgentService.GetNearbyAgentHeads(
 	return heads
 end
 
-function AgentService.new(config: Config?, teams: Team.Registry): AgentService
-	assert(teams ~= nil, "AgentService requires the authoritative team registry")
-	local positionUpdateInterval = if config and config.PositionUpdateInterval ~= nil
-		then config.PositionUpdateInterval
-		else DEFAULT_POSITION_UPDATE_INTERVAL
-	assert(
-		isFiniteNumber(positionUpdateInterval) and positionUpdateInterval > 0,
-		"AgentService PositionUpdateInterval must be a finite positive number"
-	)
+local agentServiceConfig = Configs.Simulation.AgentService
+local positionUpdateInterval = agentServiceConfig.PositionUpdateInterval or DEFAULT_POSITION_UPDATE_INTERVAL
+assert(isFiniteNumber(positionUpdateInterval) and positionUpdateInterval > 0, "AgentService PositionUpdateInterval must be a finite positive number")
 
-	return setmetatable({
-		teams = teams,
-		positionUpdateInterval = positionUpdateInterval,
-		updateElapsed = 0,
-		running = false,
-		heartbeatConnection = nil,
-		idByAgent = {},
-		agentById = {},
-		teamIdById = {},
-		lastRecordedPositionById = {},
-		lifecycleById = {},
-	}, AgentService)
-end
+local singleton: AgentService = setmetatable({
+	teams = Configs.Teams,
+	positionUpdateInterval = positionUpdateInterval,
+	updateElapsed = 0,
+	running = false,
+	updateHeartbeat = nil,
+	nextAgentId = 1,
+	idByAgent = {},
+	agents = {},
+	agentTeams = {},
+	agentPositions = {},
+	agentLifeCycles = {},
+}, AgentService)
 
-return AgentService
+return singleton

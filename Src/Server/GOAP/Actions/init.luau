@@ -9,10 +9,6 @@ local EngageEnemy = require(CompyServerScripts.GOAP.Actions.EngageEnemy)
 local Reload = require(CompyServerScripts.GOAP.Actions.Reload)
 local FindObjective = require(CompyServerScripts.GOAP.Actions.FindObjective)
 local CaptureObjective = require(CompyServerScripts.GOAP.Actions.CaptureObjective)
-local TakeCrouchCover = require(CompyServerScripts.GOAP.Actions.TakeCrouchCover)
-local TakeProneCover = require(CompyServerScripts.GOAP.Actions.TakeProneCover)
-local StandFromCrouchCover = require(CompyServerScripts.GOAP.Actions.StandFromCrouchCover)
-local CrouchFromProneCover = require(CompyServerScripts.GOAP.Actions.CrouchFromProneCover)
 
 local Actions = {}
 
@@ -23,10 +19,6 @@ function Actions.New(): { [string]: Types.Action }
 		["Reload"] = Reload.new(),
 		-- ["FindObjective"] = FindObjective.new(),
 		-- ["CaptureObjective"] = CaptureObjective.new(),
-		-- ["TakeCrouchCover"] = TakeCrouchCover.new(),
-		-- ["TakeProneCover"] = TakeProneCover.new(),
-		-- ["StandFromCrouchCover"] = StandFromCrouchCover.new(),
-		-- ["CrouchFromProneCover"] = CrouchFromProneCover.new(),
 	}
 end
 
