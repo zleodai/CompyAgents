@@ -5,7 +5,6 @@ local CompySharedScripts = ReplicatedStorage.CompyAgent
 
 local Config = {
 	Agent = require(CompySharedScripts.Config.AgentConfig),
-	Blackboard = require(CompySharedScripts.Config.BlackboardConfig),
 	Cadence = require(CompySharedScripts.Config.CadenceConfig),
 	NoobPath = require(CompySharedScripts.Config.NoobPathConfig),
 	Simulation = require(CompySharedScripts.Config.SimulationConfig),

@@ -15,6 +15,9 @@ local Promise = require(CompySharedScripts.Promise)
 local DefaultNoobPathConfig = require(CompySharedScripts.Config.NoobPathConfig)
 local Team = require(CompySharedScripts.Team)
 
+local CompyEvents = CompyServerScripts.CompyEvents
+local AgentFired = CompyEvents:WaitForChild("AgentFired") :: BindableEvent
+
 local SPHController = {}
 SPHController.__index = SPHController
 
@@ -1517,6 +1520,7 @@ function SPHController.Fire(self: SPHController): Promise.Promise<boolean>
 			end
 		end
 		createTracer(origin, hitPosition)
+		AgentFired:Fire(self.teamId, self.head.Position)
 
 		local effectsSource: Instance? = self.weaponModel or self.weapon
 		if effectsSource then

@@ -10,11 +10,25 @@ local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 
 local config: typeof(AgentConfig.FindEnemyLocation) = AgentConfig.FindEnemyLocation
 
-local function MoveToNoisyLoc(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	local pos = controller:GetHeadPart().Position
-	local dist = math.random(config.FowardDistanceMin, config.FowardDistanceMax)
+local function MoveToClosestHeardShot(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
+	local pos = data.head.Position
+	local closestHeardShot = nil
+	local shotDistance = math.huge
 
-	actionData.target = pos + data.noisyEnemyDirection.Unit * dist
+	for shotPos, _ in data.heardFireSounds do
+		local dist = (shotPos - pos).Magnitude
+
+		if dist < shotDistance then
+			closestHeardShot = shotPos
+			shotDistance = dist
+		end
+	end
+
+	if not closestHeardShot then
+		return
+	end
+
+	actionData.target = closestHeardShot
 	actionData.retargetStep = os.clock() + config.RetargetInterval
 
 	if actionData.moveTask and coroutine.status(actionData.moveTask) ~= "dead" then
@@ -52,7 +66,7 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 				end
 
 				actionData.started = true
-				MoveToNoisyLoc(actionData, controller, data)
+				MoveToClosestHeardShot(actionData, controller, data)
 			end)
 			:catch(function(reason: any): ()
 				warn(reason)
@@ -82,12 +96,12 @@ local function Update(actionData: { [any]: any }, controller: SPHController.SPHC
 	local retargetInterval = actionData.retargetStep and os.clock() > actionData.retargetStep
 
 	if stuck or notMoving or retargetInterval then
-		MoveToNoisyLoc(actionData, controller, data)
+		MoveToClosestHeardShot(actionData, controller, data)
 	end
 end
 
 local function FinishedCheck(_actionData: { [any]: any }, _controller: SPHController.SPHController, data: Types.AgentSharedData): boolean
-	return #data.sightedEnemyLocs > 0
+	return #data.sightedEnemyLocs > 0 or #data.heardFireSounds == 0
 end
 
 local function End(actionData: { [any]: any }, controller: SPHController.SPHController, _data: Types.AgentSharedData): ()
@@ -101,9 +115,11 @@ local Action = {}
 
 function Action.new(): Types.Action
 	return {
-		id = "FindEnemyLocation",
-		cost = 2,
-		preconditions = {},
+		id = "InvestigateEnemyFiring",
+		cost = 1,
+		preconditions = {
+			heardEnemyFiring = true,
+		},
 		effects = {
 			hasEnemyPos = true,
 		},

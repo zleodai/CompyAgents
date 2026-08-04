@@ -20,16 +20,15 @@ export type BehaviourState = {
 
 export type AgentSharedData = {
 	teamId: Team.Id,
+	head: BasePart,
 	noisyEnemyDirection: Vector3,
 	noisyObjectiveDirection: Vector3,
 	sightedEnemyLocs: { BasePart },
 	sightedObjectiveLocs: { Vector3 },
 	sightedCrouchCoverLocs: { Vector3 },
 	sightedProneCoverLocs: { Vector3 },
-	behaviourState: BehaviourState,
-	RequestChangeBehaviour: (request: BehaviourState) -> (),
+	heardFireSounds: { [Vector3]: number },
 	RequestReplan: (reason: string) -> (),
-	RequestMagazine: () -> boolean,
 }
 
 export type Goal = {

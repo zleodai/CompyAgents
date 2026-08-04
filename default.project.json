@@ -5,7 +5,14 @@
 
     "ServerScriptService": {
       "CompyAgent": {
-        "$path": "Src/Server"
+        "$path": "Src/Server",
+
+        "CompyEvents": {
+          "$className": "Folder",
+          "AgentFired": {
+            "$className": "BindableEvent"
+          }
+        }
       }
     },
     "ReplicatedStorage": {

@@ -4,6 +4,9 @@ local AgentConfig = {
 	MaxHealth = 100,
 	InitialMagazines = math.huge,
 	VisionDistance = 1000,
+	VisionAngle = 60,
+	HearingDistance = 200,
+	HearingFadeTime = 10,
 	FailedPlanCooldown = 0.5,
 	InfoBar = false,
 	DebugRaycast = false,
@@ -15,8 +18,8 @@ AgentConfig.ControllerConfig = {
 	weaponName = "AKM",
 	reserveAmmo = math.huge,
 	moveTimeout = 30,
-	aimSpeed = 0.4,
-	speedMult = 0.75,
+	aimSpeed = 2,
+	speedMult = 1,
 }
 
 AgentConfig.FindEnemyLocation = {

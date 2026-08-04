@@ -5,6 +5,7 @@ local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
 local Agent = require(CompyServerScripts.Agents.Agent)
+local SoundService = require(CompyServerScripts.Services.SoundService)
 local DebugService = require(CompyServerScripts.Services.DebugService)
 local AgentService = require(CompyServerScripts.Services.AgentService)
 local EnvironmentService = require(CompyServerScripts.Services.EnvironmentService)
@@ -97,9 +98,10 @@ function Simulation.Start(self: Simulation): ()
 	self.starting = true
 
 	local startedSuccessfully, startError = xpcall(function(): ()
+		SoundService:Start()
 		DebugService:Start()
-		EnvironmentService:Start()
 		AgentService:Start()
+		EnvironmentService:Start()
 		self:SpawnAgents()
 		for _, agent in ipairs(self.agents) do
 			agent:Start()
@@ -107,6 +109,7 @@ function Simulation.Start(self: Simulation): ()
 	end, debug.traceback)
 
 	if not startedSuccessfully then
+		SoundService:End()
 		DebugService:End()
 		AgentService:End()
 		EnvironmentService:End()
@@ -128,6 +131,7 @@ function Simulation.Stop(self: Simulation): ()
 	self.started = false
 	self.starting = false
 
+	SoundService:End()
 	DebugService:End()
 	AgentService:End()
 	EnvironmentService:End()

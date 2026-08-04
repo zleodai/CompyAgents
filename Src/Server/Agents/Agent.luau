@@ -11,6 +11,7 @@ local Util = require(CompyServerScripts.Core.Util)
 
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local VisionSensor = require(CompyServerScripts.Agents.Sensors.VisionSensor)
+local SoundSensor = require(CompyServerScripts.Agents.Sensors.SoundSensor)
 local InventoryModule = require(CompyServerScripts.Agents.Modules.InventoryModule)
 local PlannerModule = require(CompyServerScripts.Agents.Modules.PlannerModule)
 local Team = require(CompySharedScripts.Team)
@@ -28,19 +29,16 @@ type AgentData = {
 	agentConfig: typeof(_DefaultAgentConfig),
 	cadenceConfig: typeof(_DefaultCadenceConfig),
 
-	noisyEnemyDirection: Vector3,
-	noisyObjectiveDirection: Vector3,
-
-	sightedEnemyLocs: { BasePart },
-	sightedObjectiveLocs: { Vector3 },
+	agentSharedData: Types.AgentSharedData,
 
 	controller: SPHController.SPHController,
 	vision: VisionSensor.VisionSensor,
+	hearing: SoundSensor.SoundSensor,
 	inventory: InventoryModule.Inventory,
 	planner: PlannerModule.Planner,
 
 	heartBeat: RBXScriptConnection?,
-	visionElapsed: number,
+	sensorElapsed: number,
 	plannerElapsed: number,
 
 	alive: boolean,
@@ -50,56 +48,26 @@ local function requestReplan(self: Agent, reason: string): ()
 	self.planner:Replan(reason)
 end
 
-local function requestMagazine(self: Agent): boolean
-	return self.inventory:TryTakeMagazine()
-end
-
-local function getSharedData(self: Agent): Types.AgentSharedData
-	return {
-		teamId = self.teamId,
-		noisyEnemyDirection = self.noisyEnemyDirection,
-		noisyObjectiveDirection = self.noisyObjectiveDirection,
-		sightedEnemyLocs = self.sightedEnemyLocs,
-		sightedObjectiveLocs = self.sightedObjectiveLocs,
-		RequestReplan = function(reason: string)
-			requestReplan(self, reason)
-		end,
-		RequestMagazine = function(): boolean
-			return requestMagazine(self)
-		end,
-	} :: Types.AgentSharedData
-end
-
 local function constructBeliefs(self: Agent): { [string]: boolean }
 	local stance = self.controller:GetStance()
-
-	local standing = stance == "Standing"
-	local crouched = stance == "Crouching"
-	local proned = stance == "Proning"
-	local enemyVisible = #self.sightedEnemyLocs > 0
-
 	local health = self.controller:GetHumanoid().Health
-
-	local lowHealth = health <= 35
-
 	local ammo, _ = self.controller:GetAmmo()
-
 	local action = self.planner.action
 
 	return {
-		lowHealth = lowHealth,
-		inDanger = enemyVisible and lowHealth,
+		lowHealth = health <= 35,
 
 		objectiveCaptured = false,
-		hasObjectivePos = #self.sightedObjectiveLocs > 0,
+		hasObjectivePos = #self.agentSharedData.sightedObjectiveLocs > 0,
 
 		hasAmmo = ammo > 0,
 
-		standing = standing,
-		crouched = crouched,
-		proned = proned,
+		standing = stance == "Standing",
+		crouched = stance == "Crouching",
+		proned = stance == "Proning",
 
-		hasEnemyPos = enemyVisible,
+		heardEnemyFiring = #self.agentSharedData.heardFireSounds > 0,
+		hasEnemyPos = #self.agentSharedData.sightedEnemyLocs > 0,
 		enemyEngaged = action ~= nil and action.id == "EngageEnemy",
 	}
 end
@@ -109,10 +77,11 @@ function Agent.Update(self: Agent, dt: number): ()
 		return
 	end
 
-	self.visionElapsed += dt
-	if self.visionElapsed >= self.cadenceConfig.VisionInterval then
-		self.visionElapsed = 0
+	self.sensorElapsed += dt
+	if self.sensorElapsed >= self.cadenceConfig.SensorInterval then
+		self.sensorElapsed = 0
 		self.vision:Sense()
+		self.hearing:Sense()
 	end
 
 	local health = self.controller:GetHumanoid().Health
@@ -123,12 +92,11 @@ function Agent.Update(self: Agent, dt: number): ()
 
 	self.plannerElapsed += dt
 	if self.plannerElapsed >= self.cadenceConfig.PlannerInterval then
-		local agentSharedData = getSharedData(self)
 		local beliefs = constructBeliefs(self)
 
 		local plannerDelta = self.plannerElapsed
 		self.plannerElapsed = 0
-		self.planner:Update(beliefs, agentSharedData, plannerDelta)
+		self.planner:Update(beliefs, self.agentSharedData, plannerDelta)
 	end
 end
 
@@ -159,7 +127,7 @@ function Agent.End(self: Agent): ()
 
 	local model = self.controller:GetHumanoid().Parent
 
-	self.planner:ForceStop(getSharedData(self))
+	self.planner:ForceStop(self.agentSharedData)
 	self.controller:Destroy()
 
 	-- Hide BaseParts
@@ -209,8 +177,6 @@ function Agent.new(
 	cadenceConfig: typeof(_DefaultCadenceConfig),
 	agentService: any
 ): Agent
-	assert(teamId ~= "", "Agent teamId must not be empty")
-	assert(controller:GetTeamId() == teamId, "Agent teamId must match its SPHController teamId")
 	local agentData: AgentData = {
 		id = id,
 		teamId = teamId,
@@ -218,27 +184,43 @@ function Agent.new(
 		agentConfig = agentConfig,
 		cadenceConfig = cadenceConfig,
 
-		noisyEnemyDirection = Vector3.zero,
-		noisyObjectiveDirection = Vector3.zero,
-
-		sightedEnemyLocs = {},
-		sightedObjectiveLocs = {},
+		agentSharedData = {
+			teamId = teamId,
+			head = controller:GetHeadPart(),
+			noisyEnemyDirection = Vector3.zero,
+			noisyObjectiveDirection = Vector3.zero,
+			sightedEnemyLocs = {},
+			sightedObjectiveLocs = {},
+			sightedCrouchCoverLocs = {},
+			sightedProneCoverLocs = {},
+			heardFireSounds = {},
+			RequestReplan = function(_: string) end,
+		} :: Types.AgentSharedData,
 
 		controller = controller,
 		vision = VisionSensor.Blank,
+		hearing = SoundSensor.Blank,
 		inventory = InventoryModule.New(agentConfig.InitialMagazines),
 		planner = PlannerModule.new(),
 
 		heartBeat = nil,
-		visionElapsed = cadenceConfig.VisionInterval,
+		sensorElapsed = cadenceConfig.SensorInterval,
 		plannerElapsed = cadenceConfig.PlannerInterval,
 
 		alive = false,
 	}
 
-	agentData.vision = VisionSensor.New(agentData, agentData.id, agentData.controller:GetModel(), agentConfig.VisionDistance, agentService)
+	agentData.vision = VisionSensor.New(agentData.agentSharedData :: Types.AgentSharedData, agentConfig, agentData.id, controller:GetModel(), agentService)
 
-	return setmetatable(agentData, Agent)
+	agentData.hearing = SoundSensor.New(agentData.agentSharedData, agentData.agentConfig)
+
+	local agent = setmetatable(agentData, Agent) :: Agent
+
+	agentData.agentSharedData.RequestReplan = function(reason: string)
+		requestReplan(agent, reason)
+	end
+
+	return agent
 end
 
 return Agent
