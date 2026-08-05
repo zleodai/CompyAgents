@@ -66,7 +66,7 @@ local function constructBeliefs(self: Agent): { [string]: boolean }
 		crouched = stance == "Crouching",
 		proned = stance == "Proning",
 
-		heardEnemyFiring = #self.agentSharedData.heardFireSounds > 0,
+		heardEnemyFiring = next(self.agentSharedData.heardFireSounds) ~= nil,
 		hasEnemyPos = #self.agentSharedData.sightedEnemyLocs > 0,
 		enemyEngaged = action ~= nil and action.id == "EngageEnemy",
 	}
@@ -77,17 +77,17 @@ function Agent.Update(self: Agent, dt: number): ()
 		return
 	end
 
+	local health = self.controller:GetHumanoid().Health
+	if health <= 0 then
+		Agent.End(self)
+		return
+	end
+
 	self.sensorElapsed += dt
 	if self.sensorElapsed >= self.cadenceConfig.SensorInterval then
 		self.sensorElapsed = 0
 		self.vision:Sense()
 		self.hearing:Sense()
-	end
-
-	local health = self.controller:GetHumanoid().Health
-	if health <= 0 then
-		Agent.End(self)
-		return
 	end
 
 	self.plannerElapsed += dt

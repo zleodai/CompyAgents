@@ -7,6 +7,7 @@ local CompySharedScripts = ReplicatedStorage.CompyAgent
 local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 
 local CompyServerScripts = ServerScriptService.CompyAgent
+local Util = require(CompyServerScripts.Core.Util)
 local Types = require(CompyServerScripts.Core.Types)
 local SoundService = require(CompyServerScripts.Services.SoundService)
 
@@ -30,12 +31,18 @@ end
 SoundSensor.Blank = setmetatable({}, SoundSensor) :: SoundSensor
 
 function SoundSensor.Sense(self: SoundSensor): ()
+	local pos = self.agentSharedData.head.Position
 	local fireSounds = SoundService:GetEnemySounds(self.agentSharedData.teamId)
 	local heardFireSounds = self.agentSharedData.heardFireSounds
 
 	local toRemove = {}
 	for soundPos, soundFadeTime in heardFireSounds do
 		if os.clock() > soundFadeTime then
+			table.insert(toRemove, soundPos)
+			continue
+		end
+
+		if (pos - soundPos).Magnitude < self.config.SoundClearDistance then
 			table.insert(toRemove, soundPos)
 		end
 	end
@@ -48,10 +55,9 @@ function SoundSensor.Sense(self: SoundSensor): ()
 			continue
 		end
 
-		local pos = self.agentSharedData.head.Position
 		local dist = (pos - firePos).Magnitude
 		if dist < self.config.HearingDistance then
-			heardFireSounds[pos] = os.clock() + self.config.HearingFadeTime
+			heardFireSounds[firePos] = os.clock() + self.config.HearingFadeTime
 		end
 	end
 end

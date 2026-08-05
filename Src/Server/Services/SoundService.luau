@@ -41,7 +41,6 @@ function SoundService.Start(self: SoundService): ()
 			startTime = os.clock(),
 		} :: FireSound
 		table.insert(self.fireSounds, newAgentFireSound)
-		print(`Sound fired at {position}`)
 	end)
 end
 

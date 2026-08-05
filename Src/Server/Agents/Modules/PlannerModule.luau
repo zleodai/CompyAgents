@@ -5,6 +5,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
+local Util = require(CompyServerScripts.Core.Util)
 local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 local LogQueue = require(CompySharedScripts.LogQueue)
 
@@ -13,6 +14,7 @@ local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHContr
 local Types = require(CompyServerScripts.Core.Types)
 
 local Actions = require(CompyServerScripts.GOAP.Actions)
+local GOAPUtil = require(CompyServerScripts.GOAP.GOAPUtil)
 local GOAPPlanner = require(CompyServerScripts.GOAP.GOAPPlanner)
 
 local PlannerModule = {}
@@ -180,6 +182,10 @@ function PlannerModule.Update(self: Planner, beliefs: { [string]: boolean }, age
 
 	self.beliefs = beliefs
 	self.agentData = agentData
+
+	if self.action and not GOAPUtil.factsSatisfied(self.beliefs, self.action.preconditions) then
+		self:Replan(`{self.action.id} canceled due to preconditions not being met. Preconditions: {Util.StringifyTable(self.action.preconditions)}`)
+	end
 
 	if not self.needsReplan then
 		handleAction(self, agentData, dt)

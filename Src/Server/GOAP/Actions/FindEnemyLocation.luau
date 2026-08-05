@@ -103,7 +103,9 @@ function Action.new(): Types.Action
 	return {
 		id = "FindEnemyLocation",
 		cost = 2,
-		preconditions = {},
+		preconditions = {
+			heardEnemyFiring = false,
+		},
 		effects = {
 			hasEnemyPos = true,
 		},

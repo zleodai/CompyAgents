@@ -4,9 +4,11 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 local Types = require(CompyServerScripts.Core.Types)
 
+local InvestigateEnemyFiring = require(CompyServerScripts.GOAP.Actions.InvestigateEnemyFiring)
 local FindEnemyLocation = require(CompyServerScripts.GOAP.Actions.FindEnemyLocation)
 local EngageEnemy = require(CompyServerScripts.GOAP.Actions.EngageEnemy)
 local Reload = require(CompyServerScripts.GOAP.Actions.Reload)
+
 local FindObjective = require(CompyServerScripts.GOAP.Actions.FindObjective)
 local CaptureObjective = require(CompyServerScripts.GOAP.Actions.CaptureObjective)
 
@@ -14,6 +16,7 @@ local Actions = {}
 
 function Actions.New(): { [string]: Types.Action }
 	return {
+		["InvestigateEnemyFiring"] = InvestigateEnemyFiring.new(),
 		["FindEnemyLocation"] = FindEnemyLocation.new(),
 		["EngageEnemy"] = EngageEnemy.new(),
 		["Reload"] = Reload.new(),

@@ -21,17 +21,8 @@
       },
       "RemoteEvents": {
         "$className": "Folder",
-        "DebugPlaybackToggled": {
+        "DebugPress": {
           "$className": "RemoteEvent"
-        },
-        "DebugSpeedDecreased": {
-          "$className": "RemoteEvent"
-        },
-        "DebugSpeedIncreased": {
-          "$className": "RemoteEvent"
-        },
-        "DebugAverageFrameMS": {
-          "$className": "RemoteFunction"
         },
         "DebugSetAgentInDepthDebugActive": {
           "$className": "RemoteEvent"
@@ -46,9 +37,13 @@
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "$className": "Folder",
         "CompyAgent": {
           "$path": "Src/Client"
+        }
+      },
+      "StarterCharacterScripts": {
+        "CompyAgent": {
+          "$path": "Src/Character"
         }
       }
     }

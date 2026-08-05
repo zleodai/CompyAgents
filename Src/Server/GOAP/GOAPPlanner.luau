@@ -3,6 +3,7 @@
 local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 
+local GOAPUtil = require(CompyServerScripts.GOAP.GOAPUtil)
 local Types = require(CompyServerScripts.Core.Types)
 
 local Actions = require(CompyServerScripts.GOAP.Actions)
@@ -22,15 +23,6 @@ type SearchNode = {
 
 local function createEmptyPlan(): { Types.Action }
 	return {}
-end
-
-local function factsSatisfied(facts: Facts, desiredFacts: Facts): boolean
-	for key, value in pairs(desiredFacts) do
-		if facts[key] ~= value then
-			return false
-		end
-	end
-	return true
 end
 
 local function applyEffects(facts: Facts, effects: Facts): Facts
@@ -138,7 +130,7 @@ function GOAPPlanner.Plan(
 
 		expansions += 1
 
-		if factsSatisfied(node.facts, goalFacts) then
+		if GOAPUtil.factsSatisfied(node.facts, goalFacts) then
 			return {
 				success = true,
 				actions = reconstructPlan(node),
@@ -153,7 +145,7 @@ function GOAPPlanner.Plan(
 		end
 
 		for _, action in ipairs(actions) do
-			if factsSatisfied(node.facts, action.preconditions) then
+			if GOAPUtil.factsSatisfied(node.facts, action.preconditions) then
 				local nextFacts = applyEffects(node.facts, action.effects)
 				if factsKey(nextFacts) == factsKey(node.facts) then
 					continue
@@ -213,7 +205,7 @@ function GOAPPlanner.MakePlan(
 	end)
 	local candidateActions = Actions.ToArray(actionSet)
 	table.sort(candidateActions, function(a, b): boolean
-		return a.id < b.id
+		return a.cost < b.cost
 	end)
 
 	local totalExpansions = 0
