@@ -30,14 +30,9 @@ export type SpawnPointRecord = {
 	facing: Vector3,
 }
 
-export type CoverPointRecord = {
+export type CoverSpotRecord = {
 	part: BasePart,
 	name: string,
-	coverId: string,
-	teamId: string?,
-	posture: CoverPosture,
-	coverQuality: number,
-	cframe: CFrame,
 	position: Vector3,
 	facing: Vector3,
 }
@@ -68,11 +63,6 @@ export type SpawnPointQueryOptions = {
 	squadId: string?,
 }
 
-export type CoverPointQueryOptions = {
-	teamId: string?,
-	posture: CoverPosture?,
-}
-
 export type ObjectiveQueryOptions = {
 	teamId: string?,
 }
@@ -89,10 +79,11 @@ type EnvironmentServiceData = {
 	tagConnections: { RBXScriptConnection },
 	registrationOrderByPart: { [BasePart]: number },
 	spawnPointsByPart: { [BasePart]: SpawnPointRecord },
-	coverPointsByPart: { [BasePart]: CoverPointRecord },
 	objectivesByPart: { [BasePart]: ObjectiveRecord },
 	spawnPoints: { SpawnPointRecord },
-	coverPoints: { CoverPointRecord },
+	coverSpots: { CoverSpotRecord },
+	freeCoverSpots: { CoverSpotRecord },
+	assignedCoverSpots: { [BasePart]: string },
 	objectives: { ObjectiveRecord },
 	rooms: { [string]: RoomScript },
 	doors: { [string]: DoorScript },
@@ -109,6 +100,7 @@ type EnvironmentServiceData = {
 	roomConnectionsByModel: ConnectionsByModel,
 	doorConnectionsByModel: ConnectionsByModel,
 	registrationOrderByModel: { [Model]: number },
+	counter: number,
 }
 
 export type EnvironmentService = typeof(setmetatable({} :: EnvironmentServiceData, EnvironmentService))
@@ -140,30 +132,6 @@ local function readSpawnRadius(part: BasePart): number
 		value = part:GetAttribute("spawnRadius")
 	end
 	return if typeof(value) == "number" then math.max(0, value) else 0
-end
-
-local function readCoverFacing(part: BasePart): Vector3
-	local x = part:GetAttribute("FacingX")
-	local y = part:GetAttribute("FacingY")
-	local z = part:GetAttribute("FacingZ")
-	if typeof(x) == "number" and typeof(y) == "number" and typeof(z) == "number" then
-		local facing = Vector3.new(x, y, z)
-		if facing.Magnitude > POSITION_EPSILON then
-			return facing.Unit
-		end
-	end
-	return part.CFrame.LookVector
-end
-
-local function readCoverPosture(part: BasePart): CoverPosture
-	local posture = part:GetAttribute("Posture")
-	if posture == "Proning" then
-		return "Proning"
-	end
-	if posture ~= nil and posture ~= "Crouching" then
-		warn(("[CompyAgent:EnvironmentService] Invalid Posture on %s; using Crouching"):format(part:GetFullName()))
-	end
-	return "Crouching"
 end
 
 local function matchesTeam(recordTeamId: string?, queryTeamId: string?): boolean
@@ -282,19 +250,6 @@ local function rebuildSpawnPoints(self: EnvironmentService): ()
 	end)
 end
 
-local function rebuildCoverPoints(self: EnvironmentService): ()
-	table.clear(self.coverPoints)
-	for _, record in pairs(self.coverPointsByPart) do
-		table.insert(self.coverPoints, record)
-	end
-	table.sort(self.coverPoints, function(a: CoverPointRecord, b: CoverPointRecord): boolean
-		if a.coverId ~= b.coverId then
-			return a.coverId < b.coverId
-		end
-		return partStableLess(self, a.part, b.part)
-	end)
-end
-
 local function rebuildObjectives(self: EnvironmentService): ()
 	table.clear(self.objectives)
 	for _, record in pairs(self.objectivesByPart) do
@@ -327,13 +282,7 @@ local function rebuildRooms(self: EnvironmentService): ()
 			self.rooms[roomName] = roomScript
 			self.roomModelsByName[roomName] = model
 		else
-			warn(
-				("[CompyAgent:EnvironmentService] Duplicate room %q on %s; using %s"):format(
-					roomName,
-					model:GetFullName(),
-					self.roomModelsByName[roomName]:GetFullName()
-				)
-			)
+			warn(("[CompyAgent:EnvironmentService] Duplicate room %q on %s; using %s"):format(roomName, model:GetFullName(), self.roomModelsByName[roomName]:GetFullName()))
 		end
 	end
 end
@@ -369,7 +318,7 @@ local function rebuildDoors(self: EnvironmentService): ()
 end
 
 local function releaseRegistrationOrderIfUnused(self: EnvironmentService, part: BasePart): ()
-	if self.spawnPointsByPart[part] or self.coverPointsByPart[part] or self.objectivesByPart[part] then
+	if self.spawnPointsByPart[part] or self.objectivesByPart[part] then
 		return
 	end
 	self.registrationOrderByPart[part] = nil
@@ -385,12 +334,7 @@ end
 local function getRequiredModule(model: Model, tagName: string): ModuleScript?
 	local moduleScript = model:FindFirstChild("Script")
 	if not moduleScript or not moduleScript:IsA("ModuleScript") then
-		warn(
-			("[CompyAgent:EnvironmentService] Ignoring tagged %s without a direct ModuleScript named Script: %s"):format(
-				tagName,
-				model:GetFullName()
-			)
-		)
+		warn(("[CompyAgent:EnvironmentService] Ignoring tagged %s without a direct ModuleScript named Script: %s"):format(tagName, model:GetFullName()))
 		return nil
 	end
 	return moduleScript
@@ -442,10 +386,7 @@ local function loadDoorScript(model: Model, tagName: string): (DoorScript?, stri
 	end
 
 	local untypedValue = value :: any
-	if typeof(untypedValue.Open) ~= "function"
-		or typeof(untypedValue.Close) ~= "function"
-		or typeof(untypedValue.GetRoom) ~= "function"
-	then
+	if typeof(untypedValue.Open) ~= "function" or typeof(untypedValue.Close) ~= "function" or typeof(untypedValue.GetRoom) ~= "function" then
 		warn(("[CompyAgent:EnvironmentService] Door script must expose Open, Close, and GetRoom: %s"):format(moduleScript:GetFullName()))
 		return nil, nil
 	end
@@ -457,21 +398,6 @@ local function loadDoorScript(model: Model, tagName: string): (DoorScript?, stri
 	end
 
 	return untypedValue :: DoorScript, roomName
-end
-
-local function warnForDuplicateCoverId(self: EnvironmentService, record: CoverPointRecord): ()
-	for _, existing in ipairs(self.coverPoints) do
-		if existing.part ~= record.part and existing.coverId == record.coverId then
-			warn(
-				("[CompyAgent:EnvironmentService] Duplicate CoverId %q on %s and %s; both records remain registered"):format(
-					record.coverId,
-					existing.part:GetFullName(),
-					record.part:GetFullName()
-				)
-			)
-			return
-		end
-	end
 end
 
 local function warnForDuplicateObjectiveId(self: EnvironmentService, record: ObjectiveRecord): ()
@@ -561,13 +487,6 @@ local function matchesSpawnOptions(record: SpawnPointRecord, options: SpawnPoint
 		return true
 	end
 	return matchesTeam(record.teamId, options.teamId) and (options.squadId == nil or record.squadId == options.squadId)
-end
-
-local function matchesCoverOptions(record: CoverPointRecord, options: CoverPointQueryOptions?): boolean
-	if not options then
-		return true
-	end
-	return matchesTeam(record.teamId, options.teamId) and (options.posture == nil or record.posture == options.posture)
 end
 
 local function matchesObjectiveOptions(record: ObjectiveRecord, options: ObjectiveQueryOptions?): boolean
@@ -700,14 +619,13 @@ local function clearRegistryRecords(self: EnvironmentService): ()
 	clearModelConnections(self.roomConnectionsByModel)
 	clearModelConnections(self.doorConnectionsByModel)
 	table.clear(self.spawnPointsByPart)
-	table.clear(self.coverPointsByPart)
 	table.clear(self.objectivesByPart)
 	table.clear(self.roomScriptsByModel)
 	table.clear(self.doorScriptsByModel)
 	table.clear(self.roomNamesByModel)
 	table.clear(self.doorRoomNamesByModel)
 	table.clear(self.spawnPoints)
-	table.clear(self.coverPoints)
+	table.clear(self.coverSpots)
 	table.clear(self.objectives)
 	table.clear(self.rooms)
 	table.clear(self.doors)
@@ -919,44 +837,45 @@ function EnvironmentService.UnregisterSpawnPoint(self: EnvironmentService, part:
 	return true
 end
 
-function EnvironmentService.RegisterCoverPoint(self: EnvironmentService, part: BasePart): CoverPointRecord?
+function EnvironmentService.RegisterCoverPoint(self: EnvironmentService, part: BasePart): ()
 	if not isWorldPart(part) then
 		warn(("[CompyAgent:EnvironmentService] Cannot register cover outside Workspace: %s"):format(part:GetFullName()))
 		return nil
 	end
 
-	getRegistrationOrder(self, part)
-	local record: CoverPointRecord = {
-		part = part,
-		name = part.Name,
-		coverId = readStringAttribute(part, "CoverId") or part.Name,
-		teamId = readStringAttribute(part, "TeamId"),
-		posture = readCoverPosture(part),
-		coverQuality = readNumberAttribute(part, "CoverQuality", 1),
-		cframe = part.CFrame,
-		position = part.Position,
-		facing = readCoverFacing(part),
-	}
-	table.freeze(record)
+	local coverSpotParts = part:GetChildren()
 
-	warnForDuplicateCoverId(self, record)
-	local isNew = self.coverPointsByPart[part] == nil
-	self.coverPointsByPart[part] = record
-	if isNew then
-		self.coverConnectionsByPart[part] = createCoverConnections(self, part)
+	for index, coverSpotPart in coverSpotParts do
+		if not coverSpotPart:IsA("BasePart") or coverSpotPart.Name ~= "Pos" then
+			continue
+		end
+
+		coverSpotPart.Transparency = 1
+		-- coverSpotPart.Color = Color3.new(0, 0.6, 0)
+
+		local direction = coverSpotPart:GetChildren()[1]
+		if not direction:IsA("BasePart") or direction.Name ~= "Dir" then
+			continue
+		end
+
+		direction.Transparency = 1
+
+		self.counter += 1
+		local coverSpot: CoverSpotRecord = {
+			part = coverSpotPart,
+			name = `{part.Name}{index}_{self.counter}`,
+			position = coverSpotPart.Position,
+			facing = (direction.Position - coverSpotPart.Position).Unit,
+		}
+		table.freeze(coverSpot)
+		table.insert(self.coverSpots, coverSpot)
+		table.insert(self.freeCoverSpots, coverSpot)
 	end
-	rebuildCoverPoints(self)
-	return record
 end
 
 function EnvironmentService.UnregisterCoverPoint(self: EnvironmentService, part: BasePart): boolean
-	if self.coverPointsByPart[part] == nil then
-		return false
-	end
-	self.coverPointsByPart[part] = nil
 	disconnectPartConnections(self.coverConnectionsByPart, part)
 	releaseRegistrationOrderIfUnused(self, part)
-	rebuildCoverPoints(self)
 	return true
 end
 
@@ -1107,36 +1026,20 @@ function EnvironmentService.QuerySpawnPointsByRaycast(
 	end)
 end
 
-function EnvironmentService.QueryAllCoverPoints(self: EnvironmentService, options: CoverPointQueryOptions?): { CoverPointRecord }
-	local result: { CoverPointRecord } = {}
-	for _, record in ipairs(self.coverPoints) do
-		if matchesCoverOptions(record, options) then
-			table.insert(result, record)
-		end
-	end
-	return result
-end
-
-function EnvironmentService.QueryCoverPointsByDistance(self: EnvironmentService, origin: Vector3, maxDistance: number, options: CoverPointQueryOptions?): { CoverPointRecord }
-	return recordsFromRanked(rankByDistance(self.coverPoints, origin, maxDistance, function(record: CoverPointRecord): boolean
-		return matchesCoverOptions(record, options)
-	end, function(record: CoverPointRecord): Vector3
+function EnvironmentService.QueryFreeCoverSpotsByDistance(self: EnvironmentService, origin: Vector3, maxDistance: number): { CoverSpotRecord }
+	return recordsFromRanked(rankByDistance(self.freeCoverSpots, origin, maxDistance, function(_: CoverSpotRecord): boolean
+		return true
+	end, function(record: CoverSpotRecord): Vector3
 		return record.position
 	end))
 end
 
-function EnvironmentService.QueryCoverPointsByRaycast(
-	self: EnvironmentService,
-	origin: Vector3,
-	maxDistance: number,
-	raycastParams: RaycastParams?,
-	options: CoverPointQueryOptions?
-): { CoverPointRecord }
-	return queryByRaycast(self.coverPoints, origin, maxDistance, raycastParams, function(record: CoverPointRecord): boolean
-		return matchesCoverOptions(record, options)
-	end, function(record: CoverPointRecord): BasePart
+function EnvironmentService.QueryFreeCoverSpotsByRaycast(self: EnvironmentService, origin: Vector3, maxDistance: number, raycastParams: RaycastParams?): { CoverSpotRecord }
+	return queryByRaycast(self.freeCoverSpots, origin, maxDistance, raycastParams, function(_: CoverSpotRecord): boolean
+		return true
+	end, function(record: CoverSpotRecord): BasePart
 		return record.part
-	end, function(record: CoverPointRecord): Vector3
+	end, function(record: CoverSpotRecord): Vector3
 		return record.position
 	end)
 end
@@ -1230,6 +1133,49 @@ local function updateAgentRooms(self: EnvironmentService): ()
 	end
 end
 
+function EnvironmentService.IsCoverTaken(self: EnvironmentService, coverSpot: BasePart): boolean
+	if self.assignedCoverSpots[coverSpot] then
+		return true
+	end
+	return false
+end
+
+function EnvironmentService.GetCoverAgent(self: EnvironmentService, coverSpot: BasePart): string
+	return self.assignedCoverSpots[coverSpot]
+end
+
+function EnvironmentService.SetCoverTakenStatus(self: EnvironmentService, coverSpot: any, agentName: string, agentTake: boolean): ()
+	if agentTake then
+		if self.assignedCoverSpots[coverSpot.part] == nil then
+			self.assignedCoverSpots[coverSpot.part] = agentName
+			-- coverSpot.part.Color = Color3.new(0.6, 0, 0)
+
+			local removeIndx = nil
+			for xIndx, xCover in self.freeCoverSpots do
+				if xCover.part == coverSpot.part then
+					removeIndx = xIndx
+				end
+			end
+			if removeIndx then
+				table.remove(self.freeCoverSpots, removeIndx)
+			end
+			return
+		end
+
+		warn(`agent {agentName} attempted to take coverSpot already taken by {self.assignedCoverSpots[coverSpot.part]}`)
+	else
+		if self.assignedCoverSpots[coverSpot.part] == agentName then
+			self.assignedCoverSpots[coverSpot.part] = nil
+			-- coverSpot.part.Color = Color3.new(0, 0.6, 0)
+
+			table.insert(self.freeCoverSpots, coverSpot :: CoverSpotRecord)
+			return
+		end
+
+		warn(`agent {agentName} attempted to leave coverSpot already taken by {self.assignedCoverSpots[coverSpot.part]}`)
+	end
+end
+
 function EnvironmentService.Update(self: EnvironmentService, deltaTime: number): ()
 	if not self.running then
 		return
@@ -1242,18 +1188,12 @@ function EnvironmentService.Update(self: EnvironmentService, deltaTime: number):
 	self.cleanupElapsed %= STALE_CLEANUP_INTERVAL
 
 	local staleSpawnPoints: { BasePart } = {}
-	local staleCoverPoints: { BasePart } = {}
 	local staleObjectives: { BasePart } = {}
 	local staleRooms: { Model } = {}
 	local staleDoors: { Model } = {}
 	for part in pairs(self.spawnPointsByPart) do
 		if not isWorldPart(part) then
 			table.insert(staleSpawnPoints, part)
-		end
-	end
-	for part in pairs(self.coverPointsByPart) do
-		if not isWorldPart(part) then
-			table.insert(staleCoverPoints, part)
 		end
 	end
 	for part in pairs(self.objectivesByPart) do
@@ -1273,9 +1213,6 @@ function EnvironmentService.Update(self: EnvironmentService, deltaTime: number):
 	end
 	for _, part in ipairs(staleSpawnPoints) do
 		self:UnregisterSpawnPoint(part)
-	end
-	for _, part in ipairs(staleCoverPoints) do
-		self:UnregisterCoverPoint(part)
 	end
 	for _, part in ipairs(staleObjectives) do
 		self:UnregisterObjective(part)
@@ -1337,7 +1274,9 @@ local singleton: EnvironmentService = setmetatable({
 	coverPointsByPart = {},
 	objectivesByPart = {},
 	spawnPoints = {},
-	coverPoints = {},
+	coverSpots = {},
+	freeCoverSpots = {},
+	assignedCoverSpots = {},
 	objectives = {},
 	rooms = {},
 	doors = {},
@@ -1354,6 +1293,7 @@ local singleton: EnvironmentService = setmetatable({
 	roomConnectionsByModel = {},
 	doorConnectionsByModel = {},
 	registrationOrderByModel = {},
+	counter = 0,
 }, EnvironmentService)
 
 return singleton

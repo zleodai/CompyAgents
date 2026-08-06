@@ -10,13 +10,11 @@ local CompySharedScripts = ReplicatedStorage.CompyAgent
 local Types = require(CompyServerScripts.Core.Types)
 local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 local EnvironmentService = require(CompyServerScripts.Services.EnvironmentService)
-local Team = require(CompySharedScripts.Team)
 
 local VisionSensor = {}
 VisionSensor.__index = VisionSensor
 
 local DIRECTION_EPSILON = 0.001
-local MAX_DIRECTION_NOISE_RADIANS = math.rad(30)
 
 type VisionSensorData = {
 	config: typeof(AgentConfig)?,
@@ -56,7 +54,6 @@ local function getNoisyDirection(self: VisionSensor, origin: Vector3, locations:
 
 	local direction = horizontalOffset.Unit
 	local noisyImpact = self.config.FindEnemyLocation.DirectionNoiseImpact
-	assert(noisyImpact, "WTF")
 	local noisyDirection = (direction + self.random:NextUnitVector() * noisyImpact) / 2
 	return noisyDirection.Unit
 end

@@ -43,6 +43,7 @@ type AgentServiceData = {
 	updateHeartbeat: RBXScriptConnection?,
 	nextAgentId: number,
 	idByAgent: { [Agent.Agent]: AgentId },
+	agentByName: { [string]: Agent.Agent },
 	agents: { [AgentId]: Agent.Agent },
 	agentTeams: { [AgentId]: Team.Id },
 	agentPositions: { [AgentId]: Vector3 },
@@ -114,6 +115,7 @@ local function registerAgent(self: AgentService, agent: Agent.Agent, teamId: Tea
 	end
 
 	self.idByAgent[agent] = id
+	self.agentByName[agent.controller:GetModel().Name] = agent
 	self.agents[id] = agent
 	self.agentTeams[id] = teamId
 	self.agentPositions[id] = model:GetPivot().Position
@@ -217,20 +219,19 @@ function AgentService.GetId(self: AgentService, agent: Agent.Agent): AgentId?
 	return self.idByAgent[agent]
 end
 
+function AgentService.IsAgentAlive(self: AgentService, agentName: AgentId): boolean
+	if self.agentByName[agentName] then
+		return true
+	end
+	return false
+end
+
 function AgentService.GetAgent(self: AgentService, id: AgentId): Agent.Agent?
 	return self.agents[id]
 end
 
 function AgentService.GetAgentByName(self: AgentService, name: string): Agent.Agent?
-	for _, agent in self.agents do
-		local agentName = agent.controller:GetModel().Name
-
-		if agentName ~= nil and agentName == name then
-			return agent
-		end
-	end
-
-	return nil
+	return self.agentByName[name]
 end
 
 function AgentService.GetTeamId(self: AgentService, id: AgentId): Team.Id?
@@ -329,6 +330,7 @@ local singleton: AgentService = setmetatable({
 	updateHeartbeat = nil,
 	nextAgentId = 1,
 	idByAgent = {},
+	agentByName = {},
 	agents = {},
 	agentTeams = {},
 	agentPositions = {},

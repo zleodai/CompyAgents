@@ -10,7 +10,7 @@ local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 
 local config: typeof(AgentConfig.FindEnemyLocation) = AgentConfig.FindEnemyLocation
 
-local function ChooseShot(heardShots: { [Vector3]: number }): Vector3?
+local function GetMostRecentShot(heardShots: { [Vector3]: number }): Vector3?
 	local choosenShot = nil
 	local choosenShotTime = -math.huge -- not actual when the shot was fired but relatively it means that compared to other shotTimes
 
@@ -34,27 +34,18 @@ local function RandomNoisyVector(): Vector3
 	return Vector3.new(math.cos(rad), 0, math.sin(rad)).Unit * dist
 end
 
-local function MoveToHeardShot(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	local pos = data.head.Position
-	local closestHeardShot = ChooseShot(data.heardFireSounds)
-
-	if not closestHeardShot then
-		return
+local function MoveToTarget(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
+	if not actionData.target then
+		actionData.target = GetMostRecentShot(data.heardFireSounds)
 	end
-
-	actionData.target = closestHeardShot
-	actionData.retargetStep = os.clock() + config.RetargetInterval
 
 	if actionData.moveTask and coroutine.status(actionData.moveTask) ~= "dead" then
 		controller:StopMoving()
 	end
 
-	actionData.moveTaskStuckCheck = os.clock() + AgentConfig.FindEnemyLocation.StuckCheckInterval
-	actionData.moveTaskStartLoc = pos
-
 	actionData.moveTask = task.defer(function()
 		local noisyTarget = actionData.target + RandomNoisyVector()
-		controller:MoveTo(noisyTarget, "Walk")
+		controller:MoveTo(noisyTarget, "Sprint")
 	end)
 
 	task.defer(function()
@@ -64,13 +55,20 @@ local function MoveToHeardShot(actionData: { [any]: any }, controller: SPHContro
 	if actionData.faceTask and coroutine.status(actionData.faceTask) ~= "dead" then
 		controller:ClearAim()
 	end
+end
 
-	actionData.retargetStep = os.clock() + config.RetargetInterval
+local function MoveToHeardShot(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
+	local mostRecentShot = GetMostRecentShot(data.heardFireSounds)
+
+	if not mostRecentShot then
+		return
+	end
+
+	actionData.target = mostRecentShot
+	MoveToTarget(actionData, controller, data)
 end
 
 local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	-- print(`{controller:GetHumanoid().Name} Finding Enemy Location`)
-
 	actionData.started = false
 	task.defer(function()
 		controller
@@ -96,30 +94,30 @@ local function Update(actionData: { [any]: any }, controller: SPHController.SPHC
 
 	local resetPathfinding = false
 
-	if not resetPathfinding and (actionData.moveTaskStuckCheck and os.clock() > actionData.moveTaskStuckCheck) then
-		local startPos: Vector3 = actionData.moveTaskStartLoc
-		local pos: Vector3 = controller:GetHeadPart().Position
-
-		local distanceMoved = (pos - startPos).Magnitude
-		actionData.distanceMoved = distanceMoved
-		resetPathfinding = distanceMoved < AgentConfig.FindEnemyLocation.StuckDistance
-		actionData.moveTaskStuckCheck = os.clock() + AgentConfig.FindEnemyLocation.StuckCheckInterval
-		actionData.moveTaskStartLoc = pos
-	end
-
 	resetPathfinding = resetPathfinding or (not actionData.moveTask or (actionData.moveTask and coroutine.status(actionData.moveTask) == "dead"))
-	resetPathfinding = resetPathfinding or (actionData.retargetStep and os.clock() > actionData.retargetStep)
 
 	if not resetPathfinding then
-		local closestHeardShot = ChooseShot(data.heardFireSounds)
+		local pos = data.head.Position
+		local mostRecentShot = GetMostRecentShot(data.heardFireSounds)
 
-		if closestHeardShot then
-			resetPathfinding = closestHeardShot ~= actionData.target
+		if mostRecentShot and actionData.target then
+			local targetDir = (actionData.target - pos).Unit
+			local recentShotDir = (mostRecentShot - pos).Unit
+
+			local angDiff = math.deg(math.acos(targetDir:Dot(recentShotDir)))
+
+			if angDiff > AgentConfig.InvestigateEnemyFiring.MaxSoundAngleDiff then
+				actionData.target = mostRecentShot
+				resetPathfinding = true
+			end
+		else
+			actionData.target = mostRecentShot
+			resetPathfinding = true
 		end
 	end
 
 	if resetPathfinding then
-		MoveToHeardShot(actionData, controller, data)
+		MoveToTarget(actionData, controller, data)
 	end
 end
 
@@ -142,8 +140,10 @@ function Action.new(): Types.Action
 		cost = 1,
 		preconditions = {
 			heardEnemyFiring = true,
+			inCover = false,
 		},
 		effects = {
+			knowsEnemyPos = true,
 			hasEnemyPos = true,
 		},
 		actionData = {},

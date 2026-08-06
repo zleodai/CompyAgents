@@ -64,44 +64,27 @@ local function findClosestTarget(actionData: { [any]: any }, controller: SPHCont
 	return true, "None"
 end
 
-local function moveToClosestTarget(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): boolean
-	local target = actionData.target
-	if not target or target.Parent == nil then
-		data.RequestReplan(" [ EngageEnemy moveToClosestTarget ] target head is no longer available")
-		return false
-	end
-	actionData.moveTask = task.defer(function()
-		controller:MoveTo(target.Position, "Walk")
-	end)
-
-	actionData.retargetStep = os.clock() + config.RetargetInterval
-	return false
-end
-
 local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
 	actionData.started = false
 	task.defer(function()
 		controller
 			:Equip()
-			:andThen(function(equipped: boolean): ()
-				if not equipped then
-					return false
-				end
-
+			:andThen(function(_: boolean): any
+				return controller:SetStance("Standing")
+			end)
+			:andThen(function(_: boolean): ()
 				actionData.started = true
+
 				local success, err = findClosestTarget(actionData, controller, data)
 				if not success then
-					data.RequestReplan(" [ EngageEnemy findClosestTarget ] no enemies sighted, Error: " .. err)
+					data.RequestReplan(" [ FromCoverEngageEnemy findClosestTarget ] no enemies sighted, Error: " .. err)
 					return false
 				end
 
 				actionData.canFire = true
-				moveToClosestTarget(actionData, controller, data)
-
-				actionData.engangementEndTime = os.clock() + config.MaxEngagingTime
 			end)
-			:catch(function(reason: any): ()
-				warn(reason)
+			:catch(function(reason): ()
+				warn("FromCoverEngageEnemy start failed:", reason)
 			end)
 	end)
 end
@@ -109,23 +92,6 @@ end
 local function Update(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData, _dt: number): ()
 	if not actionData.started then
 		return
-	end
-
-	if actionData.detectionStep and os.clock() > actionData.detectionStep then
-		if not findClosestTarget(actionData, controller, data) then
-			data.RequestReplan(" [ EngageEnemy findClosestTarget ] no enemies sighted")
-			return false
-		end
-
-		if actionData.targetDist < config.EngagementDistance then
-			task.defer(function()
-				controller:StopMoving()
-			end)
-		else
-			if actionData.retargetStep and os.clock() > actionData.retargetStep then
-				moveToClosestTarget(actionData, controller, data)
-			end
-		end
 	end
 
 	if actionData.canFire and actionData.targetDist < config.FiringDistance then
@@ -136,7 +102,7 @@ local function Update(actionData: { [any]: any }, controller: SPHController.SPHC
 	end
 end
 
-local function FinishedCheck(actionData: { [any]: any }, controller: SPHController.SPHController, _: Types.AgentSharedData): boolean
+local function FinishedCheck(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): boolean
 	if not actionData.started then
 		return false
 	end
@@ -144,15 +110,10 @@ local function FinishedCheck(actionData: { [any]: any }, controller: SPHControll
 	local ammo, _ = controller:GetAmmo()
 	local noAmmo = ammo == 0
 
-	local maxEnagementTimeReached = os.clock() > actionData.engangementEndTime
-
-	return noAmmo or maxEnagementTimeReached
+	return noAmmo
 end
 
-local function End(actionData: { [any]: any }, controller: SPHController.SPHController, _: Types.AgentSharedData): ()
-	if actionData.moveTask and coroutine.status(actionData.moveTask) ~= "dead" then
-		controller:StopMoving()
-	end
+local function End(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
 	table.clear(actionData)
 end
 
@@ -160,12 +121,14 @@ local Action = {}
 
 function Action.new(): Types.Action
 	return {
-		id = "EngageEnemy",
-		cost = 2,
+		id = "FromCoverEngageEnemy",
+		cost = 0.5,
 		preconditions = {
+			brave = true,
 			hasEnemyPos = true,
 			hasAmmo = true,
-			inCover = false,
+			inCover = true,
+			coverInvalid = false,
 		},
 		effects = {
 			enemyEngaged = true,

@@ -1,5 +1,6 @@
 local ContextActionService = game:GetService("ContextActionService")
 local StarterGui = game:GetService("StarterGui")
+local Workspace = game:GetService("Workspace")
 
 function HideGui()
 	StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
@@ -111,6 +112,48 @@ function Util.StringifyCFrame(cFrame: CFrame): string
 	local rX, rY, rZ = cFrame:ToOrientation()
 
 	return `Pos: [{format(pos.X)}, {format(pos.Y)}, {format(pos.Z)}], Rot: [{format(math.deg(rX))}, {format(math.deg(rY))}, {format(math.deg(rZ))}]`
+end
+
+function Util.DebugPart(size: Vector3, cFrame: CFrame): Part
+	local debugPart = Instance.new("Part")
+	debugPart.Size = size
+	debugPart.CFrame = cFrame
+	debugPart.Color = Color3.new(0, 0, 0)
+	debugPart.Material = Enum.Material.Plastic
+	debugPart.Anchored = true
+	debugPart.CanCollide = false
+	debugPart.CanQuery = false
+	debugPart.CanTouch = false
+	debugPart.Parent = workspace
+
+	return debugPart
+end
+
+function Util.DebugTextLabel(targetPart: BasePart, text: string, studsOffset: Vector3?, size: UDim2?): TextLabel
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = `{targetPart.Name} Debug`
+	billboard.Size = size or UDim2.fromOffset(200, 50)
+	billboard.StudsOffset = studsOffset or Vector3.new(0, 3, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Adornee = targetPart
+
+	local textLabel = Instance.new("TextLabel")
+	textLabel.Name = `{targetPart.Name} DebugText`
+	textLabel.Size = UDim2.fromScale(1, 1)
+	textLabel.BackgroundTransparency = 1
+	textLabel.TextColor3 = Color3.new(0, 0, 0)
+	textLabel.TextScaled = true
+	textLabel.Font = Enum.Font.Code
+	textLabel.TextStrokeTransparency = 0.5
+	textLabel.Text = text
+	textLabel.Parent = billboard
+
+	billboard.Parent = targetPart
+	return textLabel
+end
+
+function Util.RemoveYValue(vector: Vector3): Vector3
+	return Vector3.new(vector.X, 0, vector.Z)
 end
 
 return Util

@@ -44,6 +44,7 @@ export type AnimationNames = {
 
 export type Config = {
 	weaponName: string?,
+	weaponAccuracy: number?,
 	magazineCapacity: number?,
 	reserveAmmo: number?,
 	fireInterval: number?,
@@ -58,6 +59,7 @@ export type Config = {
 	crouchSpeed: number?,
 	proneSpeed: number?,
 	speedMult: number?,
+	sprintSpeedMult: number?,
 	reachDistance: number?,
 	moveTimeout: number?,
 	repathEnabled: boolean?,
@@ -97,6 +99,7 @@ type ControllerData = {
 	weaponRig: Model,
 	weaponAnimator: Animator,
 	weaponTracks: { [string]: AnimationTrack },
+	weaponAccuracy: number,
 	inventory: Folder,
 	holsterModel: Model?,
 	holsterMotor: Motor6D?,
@@ -123,6 +126,7 @@ type ControllerData = {
 	crouchSpeed: number,
 	proneSpeed: number,
 	speedMult: number,
+	sprintSpeedMult: number,
 	reachDistance: number,
 	moveTimeout: number,
 	repathEnabled: boolean,
@@ -183,7 +187,7 @@ local POSE_BLEND_TIME = 0.15
 local function getMovementSpeed(self: SPHController, gait: Enums.Movement): number
 	local speed: number
 	if gait == "Sprint" then
-		speed = self.sprintSpeed
+		speed = self.sprintSpeed * self.sprintSpeedMult
 	elseif gait == "CrouchWalk" then
 		speed = self.crouchSpeed
 	elseif gait == "ProneWalk" then
@@ -1499,12 +1503,15 @@ function SPHController.Fire(self: SPHController): Promise.Promise<boolean>
 		self.nextShotAt = os.clock() + self.fireInterval
 		self:_setStateAttributes()
 
+		local weaponTarget = self.aimTarget
 		local origin = findMuzzlePosition(self.weaponModel, self.weapon, self.rootPart)
+		local directionNoise = Vector3.new(math.random(-1, 1), math.random(-1, 1), math.random(-1, 1)).Unit * (1 - self.weaponAccuracy)
 		local direction: Vector3
-		if self.aimTarget and (self.aimTarget - origin).Magnitude > 0.001 then
-			direction = (self.aimTarget - origin).Unit
+
+		if weaponTarget and (weaponTarget - origin).Magnitude > 0.001 then
+			direction = (weaponTarget - origin).Unit + directionNoise
 		else
-			direction = self.rootPart.CFrame.LookVector
+			direction = self.rootPart.CFrame.LookVector + directionNoise
 		end
 
 		local raycastParams = RaycastParams.new()
@@ -1911,6 +1918,7 @@ function SPHController.new(character: Model, teamId: Team.Id, config: Config?): 
 		weaponRig = weaponRig,
 		weaponAnimator = weaponAnimator,
 		weaponTracks = {},
+		weaponAccuracy = controllerConfig.weaponAccuracy,
 		inventory = inventory,
 		holsterModel = nil,
 		holsterMotor = nil,
@@ -1937,6 +1945,7 @@ function SPHController.new(character: Model, teamId: Team.Id, config: Config?): 
 		crouchSpeed = controllerConfig.crouchSpeed or 7,
 		proneSpeed = controllerConfig.proneSpeed or 3,
 		speedMult = math.max(0, controllerConfig.speedMult or 1),
+		sprintSpeedMult = math.max(0, controllerConfig.sprintSpeedMult or 1),
 		reachDistance = controllerConfig.reachDistance or 2.5,
 		moveTimeout = controllerConfig.moveTimeout or 30,
 		repathEnabled = controllerConfig.repathEnabled ~= false,

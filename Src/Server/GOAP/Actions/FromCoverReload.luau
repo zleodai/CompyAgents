@@ -8,7 +8,10 @@ local Types = require(CompyServerScripts.Core.Types)
 local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, _: Types.AgentSharedData): ()
 	task.defer(function()
 		controller
-			:Reload()
+			:SetStance("Crouching")
+			:andThen(function(_: boolean): any
+				return controller:Reload()
+			end)
 			:andThen(function(success: boolean): ()
 				if success then
 					actionData.reloadCompleted = true
@@ -32,11 +35,12 @@ local Action = {}
 
 function Action.new(): Types.Action
 	return {
-		id = "Reload",
-		cost = 1,
+		id = "FromCoverReload",
+		cost = 0.25,
 		preconditions = {
 			hasAmmo = false,
-			inCover = false,
+			inCover = true,
+			coverInvalid = false,
 		},
 		effects = {
 			hasAmmo = true,

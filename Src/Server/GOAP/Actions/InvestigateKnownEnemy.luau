@@ -10,11 +10,33 @@ local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 
 local config: typeof(AgentConfig.FindEnemyLocation) = AgentConfig.FindEnemyLocation
 
-local function MoveToNoisyLoc(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	local pos = controller:GetHeadPart().Position
-	local dist = math.random(config.FowardDistanceMin, config.FowardDistanceMax)
+local function GetMostRecentEnemyPos(enemyLocs: { [Vector3]: number }): Vector3?
+	local choosenLoc = nil
+	local choosenLocTime = -math.huge
 
-	actionData.target = pos + data.noisyEnemyDirection.Unit * dist
+	for loc, time in enemyLocs do
+		if time > choosenLocTime then
+			choosenLoc = loc
+			choosenLocTime = time
+		end
+	end
+
+	if not choosenLoc then
+		return nil
+	end
+
+	return choosenLoc
+end
+
+local function MoveToKnownEnemy(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
+	local pos = data.head.Position
+	local closestEnemyPos = GetMostRecentEnemyPos(data.rememberedEnemyLocs)
+
+	if not closestEnemyPos then
+		return
+	end
+
+	actionData.target = closestEnemyPos
 	actionData.retargetStep = os.clock() + config.RetargetInterval
 
 	if actionData.moveTask and coroutine.status(actionData.moveTask) ~= "dead" then
@@ -25,7 +47,7 @@ local function MoveToNoisyLoc(actionData: { [any]: any }, controller: SPHControl
 	actionData.moveTaskStartLoc = pos
 
 	actionData.moveTask = task.defer(function()
-		controller:MoveTo(actionData.target, "Walk")
+		controller:MoveTo(actionData.target, "Sprint")
 	end)
 
 	task.defer(function()
@@ -40,8 +62,6 @@ local function MoveToNoisyLoc(actionData: { [any]: any }, controller: SPHControl
 end
 
 local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	-- print(`{controller:GetHumanoid().Name} Finding Enemy Location`)
-
 	actionData.started = false
 	task.defer(function()
 		controller
@@ -52,7 +72,7 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 				end
 
 				actionData.started = true
-				MoveToNoisyLoc(actionData, controller, data)
+				MoveToKnownEnemy(actionData, controller, data)
 			end)
 			:catch(function(reason: any): ()
 				warn(reason)
@@ -65,29 +85,37 @@ local function Update(actionData: { [any]: any }, controller: SPHController.SPHC
 		return
 	end
 
-	local stuck = false
+	local resetPathfinding = false
 
-	if actionData.moveTaskStuckCheck and os.clock() > actionData.moveTaskStuckCheck then
+	if not resetPathfinding and (actionData.moveTaskStuckCheck and os.clock() > actionData.moveTaskStuckCheck) then
 		local startPos: Vector3 = actionData.moveTaskStartLoc
 		local pos: Vector3 = controller:GetHeadPart().Position
 
 		local distanceMoved = (pos - startPos).Magnitude
 		actionData.distanceMoved = distanceMoved
-		stuck = distanceMoved < AgentConfig.FindEnemyLocation.StuckDistance
+		resetPathfinding = distanceMoved < AgentConfig.FindEnemyLocation.StuckDistance
 		actionData.moveTaskStuckCheck = os.clock() + AgentConfig.FindEnemyLocation.StuckCheckInterval
 		actionData.moveTaskStartLoc = pos
 	end
 
-	local notMoving = not actionData.moveTask or (actionData.moveTask and coroutine.status(actionData.moveTask) == "dead")
-	local retargetInterval = actionData.retargetStep and os.clock() > actionData.retargetStep
+	resetPathfinding = resetPathfinding or (not actionData.moveTask or (actionData.moveTask and coroutine.status(actionData.moveTask) == "dead"))
+	resetPathfinding = resetPathfinding or (actionData.retargetStep and os.clock() > actionData.retargetStep)
 
-	if stuck or notMoving or retargetInterval then
-		MoveToNoisyLoc(actionData, controller, data)
+	if not resetPathfinding then
+		local closestHeardShot = GetMostRecentEnemyPos(data.rememberedEnemyLocs)
+
+		if closestHeardShot then
+			resetPathfinding = closestHeardShot ~= actionData.target
+		end
+	end
+
+	if resetPathfinding then
+		MoveToKnownEnemy(actionData, controller, data)
 	end
 end
 
 local function FinishedCheck(_actionData: { [any]: any }, _controller: SPHController.SPHController, data: Types.AgentSharedData): boolean
-	return #data.sightedEnemyLocs > 0
+	return #data.sightedEnemyLocs > 0 or next(data.rememberedEnemyLocs) == nil
 end
 
 local function End(actionData: { [any]: any }, controller: SPHController.SPHController, _data: Types.AgentSharedData): ()
@@ -101,10 +129,10 @@ local Action = {}
 
 function Action.new(): Types.Action
 	return {
-		id = "FindEnemyLocation",
-		cost = 2,
+		id = "InvestigateKnownEnemy",
+		cost = 1.5,
 		preconditions = {
-			heardEnemyFiring = false,
+			knowsEnemyPos = true,
 			inCover = false,
 		},
 		effects = {

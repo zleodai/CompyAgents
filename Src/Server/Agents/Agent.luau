@@ -6,13 +6,16 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
+local BraveryModifier = require(ServerScriptService.CompyAgent.Agents.Modifiers.BraveryModifier)
+local CoverSensor = require(CompyServerScripts.Agents.Sensors.CoverSensor)
+local MemoryModifier = require(CompyServerScripts.Agents.Modifiers.MemoryModifier)
+local EnvironmentService = require(CompyServerScripts.Services.EnvironmentService)
 local Types = require(CompyServerScripts.Core.Types)
 local Util = require(CompyServerScripts.Core.Util)
 
 local SPHController = require(CompyServerScripts.Integrations.Spearhead.SPHController)
 local VisionSensor = require(CompyServerScripts.Agents.Sensors.VisionSensor)
 local SoundSensor = require(CompyServerScripts.Agents.Sensors.SoundSensor)
-local InventoryModule = require(CompyServerScripts.Agents.Modules.InventoryModule)
 local PlannerModule = require(CompyServerScripts.Agents.Modules.PlannerModule)
 local Team = require(CompySharedScripts.Team)
 
@@ -32,9 +35,14 @@ type AgentData = {
 	agentSharedData: Types.AgentSharedData,
 
 	controller: SPHController.SPHController,
+
 	vision: VisionSensor.VisionSensor,
 	hearing: SoundSensor.SoundSensor,
-	inventory: InventoryModule.Inventory,
+	coverSensor: CoverSensor.CoverSensor,
+
+	memory: MemoryModifier.MemoryModifier,
+	bravery: BraveryModifier.BraveryModifier,
+
 	planner: PlannerModule.Planner,
 
 	heartBeat: RBXScriptConnection?,
@@ -49,26 +57,20 @@ local function requestReplan(self: Agent, reason: string): ()
 end
 
 local function constructBeliefs(self: Agent): { [string]: boolean }
-	local stance = self.controller:GetStance()
-	local health = self.controller:GetHumanoid().Health
 	local ammo, _ = self.controller:GetAmmo()
-	local action = self.planner.action
 
 	return {
-		lowHealth = health <= 35,
-
-		objectiveCaptured = false,
-		hasObjectivePos = #self.agentSharedData.sightedObjectiveLocs > 0,
+		brave = self.agentSharedData.bravery > self.agentConfig.MinimumBraveryForBrave,
 
 		hasAmmo = ammo > 0,
 
-		standing = stance == "Standing",
-		crouched = stance == "Crouching",
-		proned = stance == "Proning",
+		inCover = self.agentSharedData.inCover,
+		coverAvailable = #self.agentSharedData.sightedCoverLocs > 0,
+		coverInvalid = self.agentSharedData.cover == nil,
 
 		heardEnemyFiring = next(self.agentSharedData.heardFireSounds) ~= nil,
+		knowsEnemyPos = next(self.agentSharedData.rememberedEnemyLocs) ~= nil or #self.agentSharedData.sightedEnemyLocs > 0,
 		hasEnemyPos = #self.agentSharedData.sightedEnemyLocs > 0,
-		enemyEngaged = action ~= nil and action.id == "EngageEnemy",
 	}
 end
 
@@ -82,12 +84,18 @@ function Agent.Update(self: Agent, dt: number): ()
 		Agent.End(self)
 		return
 	end
+	self.agentSharedData.health = health
 
 	self.sensorElapsed += dt
 	if self.sensorElapsed >= self.cadenceConfig.SensorInterval then
 		self.sensorElapsed = 0
+
 		self.vision:Sense()
 		self.hearing:Sense()
+		self.coverSensor:Sense()
+
+		self.memory:Modify()
+		self.bravery:Modify()
 	end
 
 	self.plannerElapsed += dt
@@ -125,7 +133,11 @@ function Agent.End(self: Agent): ()
 		self.heartBeat = nil
 	end
 
-	local model = self.controller:GetHumanoid().Parent
+	local model = self.controller:GetModel()
+
+	if self.agentSharedData.cover then
+		EnvironmentService:SetCoverTakenStatus(self.agentSharedData.cover, model.Name, false)
+	end
 
 	self.planner:ForceStop(self.agentSharedData)
 	self.controller:Destroy()
@@ -133,9 +145,6 @@ function Agent.End(self: Agent): ()
 	-- Hide BaseParts
 	task.defer(function()
 		task.wait(0.75)
-		if not model then
-			return
-		end
 		for _, child in ipairs(model:GetChildren()) do
 			if child:IsA("BasePart") then
 				local bodyPart = child :: BasePart
@@ -185,22 +194,39 @@ function Agent.new(
 		cadenceConfig = cadenceConfig,
 
 		agentSharedData = {
+			name = controller:GetModel().Name,
 			teamId = teamId,
 			head = controller:GetHeadPart(),
+
+			health = controller:GetHumanoid().Health,
+			bravery = 0,
+
 			noisyEnemyDirection = Vector3.zero,
 			noisyObjectiveDirection = Vector3.zero,
+
 			sightedEnemyLocs = {},
 			sightedObjectiveLocs = {},
-			sightedCrouchCoverLocs = {},
-			sightedProneCoverLocs = {},
+			sightedCoverLocs = {},
+
+			rememberedEnemyLocs = {},
+
+			inCover = false,
+			cover = nil,
+
 			heardFireSounds = {},
+
 			RequestReplan = function(_: string) end,
 		} :: Types.AgentSharedData,
 
 		controller = controller,
+
 		vision = VisionSensor.Blank,
 		hearing = SoundSensor.Blank,
-		inventory = InventoryModule.New(agentConfig.InitialMagazines),
+		coverSensor = CoverSensor.Blank,
+
+		memory = MemoryModifier.Blank,
+		bravery = BraveryModifier.Blank,
+
 		planner = PlannerModule.new(),
 
 		heartBeat = nil,
@@ -211,8 +237,11 @@ function Agent.new(
 	}
 
 	agentData.vision = VisionSensor.New(agentData.agentSharedData :: Types.AgentSharedData, agentConfig, agentData.id, controller:GetModel(), agentService)
-
 	agentData.hearing = SoundSensor.New(agentData.agentSharedData, agentData.agentConfig)
+	agentData.coverSensor = CoverSensor.New(agentData.agentSharedData, agentData.agentConfig)
+
+	agentData.memory = MemoryModifier.New(agentData.agentSharedData, agentData.agentConfig, agentService)
+	agentData.bravery = BraveryModifier.New(agentData.agentSharedData, agentData.agentConfig)
 
 	local agent = setmetatable(agentData, Agent) :: Agent
 

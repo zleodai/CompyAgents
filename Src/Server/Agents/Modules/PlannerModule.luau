@@ -20,6 +20,10 @@ local GOAPPlanner = require(CompyServerScripts.GOAP.GOAPPlanner)
 local PlannerModule = {}
 PlannerModule.__index = PlannerModule
 
+local criticalBeliefs = {
+	"coverAvailable",
+}
+
 type PlannerState = {
 	active: boolean,
 
@@ -180,11 +184,23 @@ function PlannerModule.Update(self: Planner, beliefs: { [string]: boolean }, age
 		return
 	end
 
+	for _, belief in ipairs(criticalBeliefs) do
+		local oldVal = self.beliefs[belief]
+		local newVal = beliefs[belief]
+
+		if oldVal ~= newVal then
+			self.logs:push(`Update {belief} changed, {belief}: {oldVal} -> {newVal}`)
+			self:Replan(`Critical Belief: {belief} changed`)
+		end
+	end
+
 	self.beliefs = beliefs
 	self.agentData = agentData
 
 	if self.action and not GOAPUtil.factsSatisfied(self.beliefs, self.action.preconditions) then
-		self:Replan(`{self.action.id} canceled due to preconditions not being met. Preconditions: {Util.StringifyTable(self.action.preconditions)}`)
+		local factsLog = GOAPUtil.getFactsNotSatisfied(self.beliefs, self.action.preconditions)
+		self.logs:push(`Update action {self.action.id} ended, preconditions not satisfied: {factsLog}`)
+		self:Replan(`{self.action.id} canceled due to preconditions not being met:`)
 	end
 
 	if not self.needsReplan then
@@ -218,7 +234,6 @@ function PlannerModule.ForceStop(self: Planner, data: Types.AgentSharedData): ()
 end
 
 function PlannerModule.Replan(self: Planner, reason: string): ()
-	self.logs:push(`Replan, {reason}`)
 	self.needsReplan = true
 	self.replanReason = reason
 end

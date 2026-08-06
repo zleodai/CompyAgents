@@ -19,15 +19,27 @@ export type BehaviourState = {
 }
 
 export type AgentSharedData = {
+	name: string,
 	teamId: Team.Id,
 	head: BasePart,
+
+	health: number,
+	bravery: number,
+
 	noisyEnemyDirection: Vector3,
 	noisyObjectiveDirection: Vector3,
+
 	sightedEnemyLocs: { BasePart },
 	sightedObjectiveLocs: { Vector3 },
-	sightedCrouchCoverLocs: { Vector3 },
-	sightedProneCoverLocs: { Vector3 },
+	sightedCoverLocs: { any },
+
+	rememberedEnemyLocs: { [Vector3]: number },
+
+	inCover: boolean,
+	cover: any,
+
 	heardFireSounds: { [Vector3]: number },
+
 	RequestReplan: (reason: string) -> (),
 }
 

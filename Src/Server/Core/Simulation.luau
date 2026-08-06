@@ -25,14 +25,10 @@ type SimulationData = {
 
 export type Simulation = typeof(setmetatable({} :: SimulationData, Simulation))
 
-local function getSpawnCFrame(self: Simulation, teamId: Team.Id, index: number): CFrame
-	assert(index >= 1 and index % 1 == 0, "index must be a positive integer")
-
-	local spawnPoints: { EnvironmentService.SpawnPointRecord } = EnvironmentService:QueryAllSpawnPoints({
-		teamId = teamId,
-	})
+local function getSpawnCFrame(teamId: Team.Id): CFrame
+	local spawnPoints: { EnvironmentService.SpawnPointRecord } = EnvironmentService:QueryAllSpawnPoints({ teamId = teamId })
 	if #spawnPoints > 0 then
-		local spawnPoint = spawnPoints[((index - 1) % #spawnPoints) + 1]
+		local spawnPoint = spawnPoints[math.random(1, #spawnPoints)]
 		local position = spawnPoint.position
 		if spawnPoint.spawnRadius > 0 then
 			local angle = math.random() * math.pi * 2
@@ -42,14 +38,7 @@ local function getSpawnCFrame(self: Simulation, teamId: Team.Id, index: number):
 		return CFrame.lookAt(position, position + spawnPoint.facing)
 	end
 
-	if not self.config.Simulation.UseConfigSpawnsFallback then
-		error(`No Studio spawn is available for team {teamId}`)
-	end
-
-	local teamConfig = self.config.Teams[teamId]
-	assert(teamConfig, `Missing team config for {teamId}`)
-	local position = teamConfig.SpawnOrigin + Vector3.new(0, 0, (index - 1) * teamConfig.SpawnSpacing)
-	return CFrame.lookAt(position, position + teamConfig.Forward)
+	error(`No Studio spawn is available for team {teamId}`)
 end
 
 local function destroyAgent(agent: Agent.Agent): ()
@@ -76,7 +65,7 @@ function Simulation.SpawnAgents(self: Simulation): ()
 		for _index = 1, self.config.Simulation.DemoAgentsPerTeam do
 			local agentTeamId = teamId
 			local spawnIndex = (self.spawnedAgentCountByTeam[agentTeamId] or 0) + 1
-			local spawnCFrame = getSpawnCFrame(self, agentTeamId, spawnIndex)
+			local spawnCFrame = getSpawnCFrame(agentTeamId)
 			local agent = AgentService:CreateAgent(spawnCFrame, { teamId = teamId })
 			self.spawnedAgentCountByTeam[agentTeamId] = spawnIndex
 			table.insert(self.agents, agent)
@@ -97,31 +86,22 @@ function Simulation.Start(self: Simulation): ()
 	self.started = true
 	self.starting = true
 
-	local startedSuccessfully, startError = xpcall(function(): ()
+	task.defer(function()
 		SoundService:Start()
 		DebugService:Start()
-		AgentService:Start()
 		EnvironmentService:Start()
+
+		task.wait(0.5)
+
 		self:SpawnAgents()
+
+		task.wait(0.5)
+
+		AgentService:Start()
 		for _, agent in ipairs(self.agents) do
 			agent:Start()
 		end
-	end, debug.traceback)
-
-	if not startedSuccessfully then
-		SoundService:End()
-		DebugService:End()
-		AgentService:End()
-		EnvironmentService:End()
-		for _, agent in ipairs(self.agents) do
-			destroyAgent(agent)
-		end
-		table.clear(self.agents)
-		self.started = false
-		self.starting = false
-		error(startError, 0)
-	end
-	self.starting = false
+	end)
 end
 
 function Simulation.Stop(self: Simulation): ()
