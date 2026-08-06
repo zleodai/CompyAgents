@@ -67,7 +67,7 @@ function VisionSensor.getNoisyEnemyDirection(self: VisionSensor, position: Vecto
 		return self.random:NextUnitVector()
 	end
 
-	local nearbyEnemies = self.agentService:GetNearbyEnemyAgents(self.agentSharedData.teamId, position, self.config.VisionDistance, self.id)
+	local nearbyEnemies = self.agentService:GetNearbyEnemyAgents(self.agentSharedData.teamId, position, self.config.NoisyVisionDistance, self.id)
 
 	local locations: { Vector3 } = {}
 	for _, nearbyEnemy in ipairs(nearbyEnemies) do
@@ -81,7 +81,7 @@ function VisionSensor.getNoisyObjectiveDirection(self: VisionSensor, position: V
 		return Vector3.zero
 	end
 
-	local objectives = EnvironmentService:QueryObjectivesByDistance(position, self.config.VisionDistance, {
+	local objectives = EnvironmentService:QueryObjectivesByDistance(position, self.config.NoisyVisionDistance, {
 		teamId = self.agentSharedData.teamId,
 	})
 	local locations: { Vector3 } = {}

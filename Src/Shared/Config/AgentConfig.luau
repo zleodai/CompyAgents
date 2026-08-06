@@ -8,12 +8,13 @@ local AgentConfig = {
 	MemoryFadeTime = 5,
 
 	MinimumBraveryForBrave = 30,
-	BraveryIncreaseRate = 1,
+	BraveryIncreaseRate = 0.1,
 
 	CoverMaxDistance = 50,
 	CoverMaxAngleDiff = 45,
 
-	VisionDistance = 1000,
+	NoisyVisionDistance = 1000,
+	VisionDistance = 250,
 	VisionAngle = 80,
 
 	SoundNoise = 20, --CANNOT BE GREATER THAN SoundClearDistance
@@ -31,7 +32,7 @@ local AgentConfig = {
 
 AgentConfig.ControllerConfig = {
 	weaponName = "AKM",
-	weaponAccuracy = 0.95, -- 0 - 1 scale
+	weaponAccuracy = 0.99, -- 0 - 1 scale
 	reserveAmmo = math.huge,
 	moveTimeout = 30,
 	aimSpeed = 2,
@@ -45,14 +46,14 @@ AgentConfig.FindEnemyLocation = {
 	RetargetInterval = 20, --has to be atleast 1 second
 	DirectionNoiseImpact = 0.8,
 	FowardDistanceMin = 30,
-	FowardDistanceMax = 200,
+	FowardDistanceMax = 250,
 }
 
 AgentConfig.EngageEnemy = {
 	DetectionInterval = 0.1,
 	RetargetInterval = 2,
 	EngagementDistance = 100,
-	FiringDistance = 200,
+	FiringDistance = 250,
 	MaxEngagingTime = 30,
 }
 
@@ -61,7 +62,7 @@ AgentConfig.InvestigateEnemyFiring = {
 }
 
 AgentConfig.TakeCover = {
-	ReachCoverXZDist = 2,
+	ReachCoverXZDist = 4,
 }
 
 return AgentConfig

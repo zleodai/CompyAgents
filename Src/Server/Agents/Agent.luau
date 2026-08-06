@@ -143,17 +143,17 @@ function Agent.End(self: Agent): ()
 	self.controller:Destroy()
 
 	-- Hide BaseParts
-	task.defer(function()
-		task.wait(0.75)
-		for _, child in ipairs(model:GetChildren()) do
-			if child:IsA("BasePart") then
-				local bodyPart = child :: BasePart
-				bodyPart.CanCollide = false
-				bodyPart.CanQuery = false
-				bodyPart.CanTouch = false
-			end
-		end
-	end)
+	-- task.defer(function()
+	-- 	task.wait(0.75)
+	-- 	for _, child in ipairs(model:GetChildren()) do
+	-- 		if child:IsA("BasePart") then
+	-- 			local bodyPart = child :: BasePart
+	-- 			bodyPart.CanCollide = false
+	-- 			bodyPart.CanQuery = false
+	-- 			bodyPart.CanTouch = false
+	-- 		end
+	-- 	end
+	-- end)
 end
 
 function Agent.DebugDump(self: Agent): string

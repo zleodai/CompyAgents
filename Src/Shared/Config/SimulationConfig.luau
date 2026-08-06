@@ -1,7 +1,7 @@
 -- !strict
 
 local SimulationConfig = {
-	DemoAgentsPerTeam = 30,
+	DemoAgentsPerTeam = 10,
 	UseStudioLevel = true,
 	UseConfigSpawnsFallback = true,
 	SpawnTag = "CompySpawn",

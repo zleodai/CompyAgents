@@ -16,8 +16,10 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 
 	task.defer(function()
 		controller:SetStance("Standing"):andThen(function(_): ()
-			EnvironmentService:SetCoverTakenStatus(data.cover, name, false)
-			data.cover = nil
+			if data.cover then
+				EnvironmentService:SetCoverTakenStatus(data.cover, name, false)
+				data.cover = nil
+			end
 			actionData.finished = true
 		end)
 	end)

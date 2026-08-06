@@ -48,6 +48,22 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 	end)
 end
 
+local function Update(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData, _dt: number): ()
+	if not actionData.started then
+		return
+	end
+
+	local resetPathfinding = false
+
+	resetPathfinding = resetPathfinding or (not actionData.moveTask or (actionData.moveTask and coroutine.status(actionData.moveTask) == "dead"))
+
+	if resetPathfinding then
+		actionData.moveTask = task.defer(function()
+			controller:MoveTo(actionData.coverSpot.position, "Sprint")
+		end)
+	end
+end
+
 local function FinishedCheck(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): boolean
 	if not actionData.started or not data.cover then
 		return false
@@ -89,7 +105,7 @@ function Action.new(): Types.Action
 		},
 		actionData = {},
 		Start = Start,
-		Update = nil,
+		Update = Update,
 		FinishedCheck = FinishedCheck,
 		End = End,
 	}

@@ -817,6 +817,8 @@ function EnvironmentService.RegisterSpawnPoint(self: EnvironmentService, part: B
 	}
 	table.freeze(record)
 
+	record.part.Transparency = 1
+
 	local isNew = self.spawnPointsByPart[part] == nil
 	self.spawnPointsByPart[part] = record
 	if isNew then
