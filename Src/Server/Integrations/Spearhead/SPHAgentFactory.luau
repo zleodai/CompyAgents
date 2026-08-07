@@ -72,6 +72,9 @@ function SPHAgentFactory.Create(name: string, spawnCFrame: CFrame, config: Agent
 	local defaultControllerConfig = DEFAULT_CONFIG.controllerConfig or {}
 	local mergedControllerConfig = mergeConfig(defaultControllerConfig, config.controllerConfig) :: SPHController.Config
 
+	local gunOptions = { "AKM", "M4A1" }
+	mergedControllerConfig.weaponName = gunOptions[math.random(1, #gunOptions)]
+
 	local modelName = DEFAULT_MODEL_NAME
 
 	local modelOptions = Configs.Teams[mergedConfig.teamId].Models

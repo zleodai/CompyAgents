@@ -88,16 +88,18 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 					return false
 				end
 
-				actionData.started = true
+				task.wait(math.random(config.StartFiringDelayMin, config.StartFiringDelayMax))
+
 				local success, err = findClosestTarget(actionData, controller, data)
 				if not success then
 					data.RequestReplan(" [ EngageEnemy findClosestTarget ] no enemies sighted, Error: " .. err)
 					return false
 				end
 
-				actionData.canFire = true
 				moveToClosestTarget(actionData, controller, data)
 
+				actionData.started = true
+				actionData.canFire = true
 				actionData.engangementEndTime = os.clock() + config.MaxEngagingTime
 			end)
 			:catch(function(reason: any): ()

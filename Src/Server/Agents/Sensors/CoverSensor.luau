@@ -52,9 +52,18 @@ function CoverSensor.Sense(self: CoverSensor): ()
 		end
 
 		local enemyDir = Vector3.zero
-		for _, enemypart in sightedEnemyLocs do
-			enemyDir += (enemypart.Position - coverSpot.position).Unit
+		local closestEnemyDist = math.huge
+		for _, enemy in sightedEnemyLocs do
+			enemyDir += (enemy.Position - coverSpot.position).Unit
+			local dist = (position - enemy.Position).Magnitude
+			closestEnemyDist = math.min(closestEnemyDist, dist)
 		end
+
+		local coverSpotDist = (position - coverSpot.position).Magnitude
+		if coverSpotDist + self.config.MinCoverEnemyDistance > closestEnemyDist then
+			continue
+		end
+
 		enemyDir = Vector3.new(enemyDir.X, 0, enemyDir.Z)
 		enemyDir = (enemyDir / #sightedEnemyLocs).Unit
 

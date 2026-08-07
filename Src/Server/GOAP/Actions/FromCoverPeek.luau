@@ -9,7 +9,20 @@ local Types = require(CompyServerScripts.Core.Types)
 local AgentConfig = require(CompySharedScripts.Config.AgentConfig)
 
 local function Start(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): ()
-	controller:SetStance("Standing")
+	local pos = controller:GetHeadPart().Position
+	local knownEnemies = data.rememberedEnemyLocs
+	local avgEnemyDir = Vector3.zero
+
+	for enemy, _ in knownEnemies do
+		local enemyDir = (enemy - pos).Unit
+		avgEnemyDir += enemyDir
+	end
+
+	avgEnemyDir = avgEnemyDir.Unit
+
+	controller:Aim(pos + avgEnemyDir):andThen(function(_): ()
+		controller:SetStance("Standing")
+	end)
 end
 
 local function FinishedCheck(actionData: { [any]: any }, controller: SPHController.SPHController, data: Types.AgentSharedData): boolean

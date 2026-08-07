@@ -49,26 +49,8 @@ function MemoryModifier.Modify(self: MemoryModifier): ()
 		rememberedEnemyLocs[loc] = nil
 	end
 
-	table.clear(toRemove)
-
 	for _, enemy in ipairs(currentEnemies) do
-		local loc = enemy.Position
-		for oldLoc, _ in rememberedEnemyLocs do
-			if oldLoc == loc then
-				continue
-			end
-
-			local dist = (loc - oldLoc).Magnitude
-			if dist < self.config.MemoryMergeDist then
-				table.insert(toRemove, oldLoc)
-			end
-		end
-
-		rememberedEnemyLocs[loc] = time + self.config.MemoryFadeTime
-	end
-
-	for _, loc in ipairs(toRemove) do
-		rememberedEnemyLocs[loc] = nil
+		rememberedEnemyLocs[enemy.Position] = time + self.config.MemoryFadeTime
 	end
 end
 

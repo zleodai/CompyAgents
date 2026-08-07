@@ -6,6 +6,8 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local CompyServerScripts = ServerScriptService.CompyAgent
 local CompySharedScripts = ReplicatedStorage.CompyAgent
 
+local EasyRagdoll = require(ReplicatedStorage.EasyRagdoll)
+
 local BraveryModifier = require(ServerScriptService.CompyAgent.Agents.Modifiers.BraveryModifier)
 local CoverSensor = require(CompyServerScripts.Agents.Sensors.CoverSensor)
 local MemoryModifier = require(CompyServerScripts.Agents.Modifiers.MemoryModifier)
@@ -119,6 +121,9 @@ function Agent.Start(self: Agent): ()
 	self.heartBeat = RunService.Heartbeat:Connect(function(dt: number): ()
 		Agent.Update(self, dt)
 	end)
+
+	local humanoid = self.controller:GetHumanoid()
+	humanoid.BreakJointsOnDeath = false
 end
 
 function Agent.End(self: Agent): ()
@@ -134,6 +139,7 @@ function Agent.End(self: Agent): ()
 	end
 
 	local model = self.controller:GetModel()
+	local head = self.controller:GetHeadPart()
 
 	if self.agentSharedData.cover then
 		EnvironmentService:SetCoverTakenStatus(self.agentSharedData.cover, model.Name, false)
@@ -141,6 +147,10 @@ function Agent.End(self: Agent): ()
 
 	self.planner:ForceStop(self.agentSharedData)
 	self.controller:Destroy()
+
+	if EasyRagdoll then
+		EasyRagdoll.SetRagdoll(model, true, true, 100, head.CFrame.LookVector)
+	end
 
 	-- Hide BaseParts
 	-- task.defer(function()

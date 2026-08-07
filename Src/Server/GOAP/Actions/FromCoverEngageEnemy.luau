@@ -73,7 +73,7 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 				return controller:SetStance("Standing")
 			end)
 			:andThen(function(_: boolean): ()
-				actionData.started = true
+				task.wait(math.random(config.StartFiringDelayMin, config.StartFiringDelayMax))
 
 				local success, err = findClosestTarget(actionData, controller, data)
 				if not success then
@@ -81,6 +81,7 @@ local function Start(actionData: { [any]: any }, controller: SPHController.SPHCo
 					return false
 				end
 
+				actionData.started = true
 				actionData.canFire = true
 			end)
 			:catch(function(reason): ()
@@ -94,7 +95,7 @@ local function Update(actionData: { [any]: any }, controller: SPHController.SPHC
 		return
 	end
 
-	if actionData.canFire and actionData.targetDist < config.FiringDistance then
+	if actionData.canFire and actionData.targetDist and actionData.targetDist < config.FiringDistance then
 		actionData.canFire = false
 		actionData.shootTask = task.defer(function()
 			aimAndShoot(actionData, controller, data)
